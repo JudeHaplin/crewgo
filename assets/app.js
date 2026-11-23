@@ -252,7 +252,19 @@
       const res = await cloud.auth.getSession();
       session = res.data;
     } catch (e) { /* ignore */ }
-    if (!session) { showLogin(); return; }
+    if (!session) {
+      // 全新部署（一个人都还没建）时直接进「初始化管理员」，
+      // 不然第一次打开看到登录框，填姓名+PIN 只会得到「姓名或 PIN 不对」。
+      try {
+        const r = await fetch('/api/auth/status');
+        if (r.ok) {
+          const st = await r.json();
+          if (st && st.initialized === false) state.loginMode = 'setup';
+        }
+      } catch (e) { /* 云端版没有这个接口，忽略 */ }
+      showLogin();
+      return;
+    }
 
     state.session = session;
     state.user = session.user || {};
@@ -1558,6 +1570,15 @@
     const { data, error } = await cloud.auth.signIn(name, pin);
     if (error) {
       if (btn) { btn.disabled = false; btn.textContent = '登录'; }
+      // 一个人都没建时，登录失败九成是「还没初始化」，直接把用户带到初始化页
+      try {
+        const st = await fetch('/api/auth/status').then(r => r.json());
+        if (st && st.initialized === false) {
+          state.loginMode = 'setup';
+          showLogin('系统里还没有任何账号，请先创建统筹管理员。');
+          return;
+        }
+      } catch (e) { /* 云端版没有这个接口，忽略 */ }
       toast('登录失败：' + (error.message || '请重试'), 3600);
       return;
     }
