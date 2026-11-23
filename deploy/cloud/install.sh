@@ -4,6 +4,7 @@
 #   bash install.sh                       # 默认 8080 端口，数据放 /opt/crewgo/data
 #   PORT=9080 bash install.sh             # 换端口
 #   IMAGE=ghcr.io/judehaplin/crewgo:1.0.3 bash install.sh
+#   VERSION=1.0.3 bash install.sh         # 指定版本（默认取 GitHub 最新发布，取不到用内置版本）
 #   GHCR_MIRROR=1 bash install.sh         # 强制走南大镜像（ghcr.io 拉不动时）
 #
 # 只依赖 docker；镜像自带 healthcheck 与自动重启。
@@ -11,7 +12,14 @@ set -euo pipefail
 
 PORT="${PORT:-8080}"
 DATA_DIR="${DATA_DIR:-/opt/crewgo/data}"
-IMAGE="${IMAGE:-ghcr.io/judehaplin/crewgo:1.0.3}"
+# 内置兜底版本；正常情况下从 GitHub 取最新 release，免得每次发版都要改脚本
+FALLBACK_TAG="1.0.4"
+if [ -z "${VERSION:-}" ] && [ -z "${IMAGE:-}" ]; then
+  VERSION=$(curl -fsSL -m 6 https://api.github.com/repos/JudeHaplin/crewgo/releases/latest 2>/dev/null \
+    | tr -d ' \n' | sed -n 's/.*"tag_name":"v\{0,1\}\([^"]*\)".*/\1/p' || true)
+  [ -n "${VERSION:-}" ] || VERSION="$FALLBACK_TAG"
+fi
+IMAGE="${IMAGE:-ghcr.io/judehaplin/crewgo:${VERSION:-$FALLBACK_TAG}}"
 TAG="${IMAGE##*:}"
 NAME_PATH="judehaplin/crewgo"
 MIRROR_ROOT="${MIRROR_ROOT:-ghcr.nju.edu.cn}"
