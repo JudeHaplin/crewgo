@@ -134,19 +134,30 @@ NAS 上的飞牛网关偶尔会闹脾气，云服务器是最省事的路子：�
 
 ### 想要域名 + HTTPS（备案通过后再做）
 
-用 Caddy 反代，证书自动续：
+用 Caddy 反代，Let's Encrypt 证书自动申请、自动续期（免费，不用买）：
+
+```bash
+# 前提：ICP 备案已通过、A 记录已指向本机、防火墙放行 80/443
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/https.sh -o /tmp/https.sh
+sudo bash /tmp/https.sh crewgo.cn
+```
+
+脚本会检查解析与端口、装 Caddy、写反代配置、等证书签发并自检。手工版等价操作：
 
 ```bash
 apt-get install -y caddy
 cat >/etc/caddy/Caddyfile <<'EOF'
-crewgo.example.com {
+crewgo.example.com, www.crewgo.example.com {
+    encode gzip
     reverse_proxy 127.0.0.1:8080
 }
 EOF
 systemctl restart caddy
 ```
 
-然后把 80/443 也放行，域名 A 记录指向公网 IP。Caddy 会自动申请 Let's Encrypt 证书。
+> 也可以不装 Caddy，用阿里云「个人测试证书（免费版）」：每实名主体每年 20 张、**90 天有效期且不自动续期**，到期要重新申请并替换。相比之下 Let's Encrypt 自动续期，省事得多。轻量服务器控制台的「HTTPS 设置」面板只认阿里云账号内的证书，走 Caddy 就不受这个限制。
+>
+> 未备案时 Let's Encrypt 的 HTTP 验证会被大陆服务器拦掉，所以**必须先备案再上证书**。
 
 ### 日常维护
 
