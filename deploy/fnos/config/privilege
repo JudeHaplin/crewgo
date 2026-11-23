@@ -2,6 +2,6 @@
     "defaults": {
         "run-as": "package"
     },
-    "username": "docker-repair-scheduler",
-    "groupname": "docker-repair-scheduler"
+    "username": "docker-crewgo",
+    "groupname": "docker-crewgo"
 }

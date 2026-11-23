@@ -1,19 +1,19 @@
-appname               = repair-scheduler
+appname               = crewgo
 version               = {{VERSION}}
-display_name          = 维修排班
-desc                  = 房屋维修预约与人员排期：预约人提单、维修工看自己的安排、统筹看全员日历。自带本地数据库与定时通知，支持邮件（EmailJS）和微信（PushPlus）推送，不依赖任何外部服务。
+display_name          = 速派
+desc                  = 速派（CrewGo）维修人员预约管理系统：预约人提单、维修工看自己的安排、统筹看全员日历。自带本地数据库与定时通知，支持邮件（EmailJS）和微信（PushPlus）推送，不依赖任何外部服务。
 source                = thirdparty
 platform              = all
 
 maintainer            = {{OWNER}}
-maintainer_url        = https://github.com/{{OWNER}}/repair-scheduler
+maintainer_url        = https://github.com/{{OWNER}}/crewgo
 distributor           = {{OWNER}}
 
 os_min_version        = 1.2.0
 ctl_stop              = true
 
 desktop_uidir         = ui
-desktop_applaunchname = repair-scheduler.Application
+desktop_applaunchname = crewgo.Application
 
 service_port          = 8080
 checkport             = true

@@ -1,6 +1,6 @@
 {
     ".url": {
-        "repair-scheduler.Application": {
+        "crewgo.Application": {
             "title": "{display_name}",
             "icon": "images/icon_{0}.png",
             "type": "url",

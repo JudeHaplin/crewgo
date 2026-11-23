@@ -1,8 +1,8 @@
 services:
-  repair-scheduler:
-    image: repair-scheduler:1.0.0
+  crewgo:
+    image: crewgo:1.0.0
     build: .
-    container_name: repair-scheduler
+    container_name: crewgo
     restart: unless-stopped
     ports:
       - "8080:8080"

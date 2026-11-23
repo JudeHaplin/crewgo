@@ -7,7 +7,7 @@
 (function () {
   'use strict';
 
-  const TOKEN_KEY = 'repair_scheduler_token';
+  const TOKEN_KEY = 'crewgo_token';
   window.__LOCAL__ = true; // app.js 用它关掉「谁打开谁补发」的旧逻辑
 
   const getToken = () => { try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; } };

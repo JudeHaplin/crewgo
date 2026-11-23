@@ -1,6 +1,6 @@
-# 维修排班 · Repair Scheduler
+# 速派 CrewGo · 维修人员预约管理系统
 
-房屋维修的**预约 + 排期**系统，给维修队内部用：预约人提单（谁、哪天、去哪、修什么），维修工看自己接下来的安排，统筹一眼看完所有人的日历。
+维修人员的**预约 + 排期 + 派单**系统，给维修队内部用：预约人提单（谁、哪天、去哪、修什么），维修工看自己接下来的安排，统筹一眼看完所有人的日历。
 
 **自托管**：一个容器跑完整套（前端 + 本地数据库 + 定时通知），不依赖任何外部服务，适合放在 NAS 上长期跑。
 
@@ -26,8 +26,8 @@
 ## 快速开始（Docker）
 
 ```bash
-git clone https://github.com/<你的用户名>/repair-scheduler.git
-cd repair-scheduler
+git clone https://github.com/<你的用户名>/crewgo.git
+cd crewgo
 
 docker compose up -d --build
 # 打开 http://<NAS或电脑IP>:8080
@@ -36,18 +36,18 @@ docker compose up -d --build
 或者不用 compose：
 
 ```bash
-docker run -d --name repair-scheduler \
+docker run -d --name crewgo \
   -p 8080:8080 \
   -v $(pwd)/data:/data \
   --restart unless-stopped \
-  ghcr.io/<你的用户名>/repair-scheduler:latest
+  ghcr.io/<你的用户名>/crewgo:latest
 ```
 
 首次打开会自动进入**初始化**：填姓名和 PIN，这个账号就是统筹管理员。
 
 ## 安装到飞牛 fnOS（fpk）
 
-1. 到 [Releases](../../releases) 下载 `repair-scheduler-1.0.0.fpk`
+1. 到 [Releases](../../releases) 下载 `crewgo-1.0.0.fpk`
 2. 飞牛应用中心 → 手动安装 → 选择该文件
 3. 装完从桌面图标打开，第一次进入创建管理员
 

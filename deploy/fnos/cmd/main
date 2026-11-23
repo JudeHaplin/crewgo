@@ -3,7 +3,7 @@
 # 容器的启停由飞牛应用中心负责，这里只做状态回报。
 
 FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
-DOCKER_NAME="repair-scheduler"
+DOCKER_NAME="crewgo"
 
 is_docker_running() {
     if [ -f "$FILE_PATH" ]; then

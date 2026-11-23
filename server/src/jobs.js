@@ -44,12 +44,12 @@ function mailHtml(opt) {
   return '<div style="background:#f4f5f7;padding:22px 14px;font-family:-apple-system,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif">' +
     '<div style="max-width:560px;margin:0 auto;background:#fff;border:1px solid #e6e8ee;border-radius:12px;overflow:hidden">' +
     '<div style="padding:18px 22px;border-bottom:1px solid #eef0f4">' +
-    '<div style="font-size:11px;color:#9aa1ad;letter-spacing:.1em;margin-bottom:7px">维修排班</div>' +
+    '<div style="font-size:11px;color:#9aa1ad;letter-spacing:.1em;margin-bottom:7px">速派</div>' +
     '<div style="font-size:19px;font-weight:700;color:#111827">' + esc(opt.title) + '</div></div>' +
     '<div style="padding:6px 22px 10px">' +
     (opt.intro ? '<p style="margin:14px 0 0;color:#4b5563;font-size:14px;line-height:1.7">' + esc(opt.intro) + '</p>' : '') +
     body + '</div>' +
-    '<div style="padding:14px 22px;background:#fafbfc;border-top:1px solid #eef0f4;color:#9aa1ad;font-size:12px">' + esc(opt.foot || '这封邮件由「维修排班」自动发出。') + '</div>' +
+    '<div style="padding:14px 22px;background:#fafbfc;border-top:1px solid #eef0f4;color:#9aa1ad;font-size:12px">' + esc(opt.foot || '这封邮件由「速派」自动发出。') + '</div>' +
     '</div></div>';
 }
 
@@ -84,7 +84,7 @@ async function sendMail(cfg, opt) {
         template_params: {
           to_email: opt.to,
           to_name: opt.toName || '',
-          subject: opt.subject || '维修排班通知',
+          subject: opt.subject || '速派通知',
           message: opt.html || esc(opt.text || ''),
           plain_text: opt.text || ''
         }
@@ -209,7 +209,7 @@ async function runDigest() {
     owner: 'system',
     kind: 'digest',
     subject: '【今日派单】' + today + ' · 共 ' + list.length + ' 单',
-    html: mailHtml({ title: dayLabel(today) + ' 派单汇总', bodyHtml: body, foot: '每天定时发一封，由 NAS 上的维修排班服务自动发出。' })
+    html: mailHtml({ title: dayLabel(today) + ' 派单汇总', bodyHtml: body, foot: '每天定时发一封，由 NAS 上的速派服务自动发出。' })
   });
   if (r.ok) raw().prepare('UPDATE settings SET last_digest_date = ? WHERE id = 1').run(today);
   return r.ok;

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 维修排班 · 自托管服务
+ * 速派 · 自托管服务
  * 一个进程同时做三件事：托管前端静态文件、提供本地 API、跑定时通知任务。
  * 零外部依赖（只用 Node 内置模块 + node:sqlite）。
  */
@@ -16,7 +16,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 const ROOT = process.env.APP_ROOT || path.join(__dirname, '..', '..');
 const VERSION = require('../package.json').version;
 // 飞牛 fnOS 网关会把 /app/<appname>/ 反代进来，这里统一剥掉前缀
-const STRIP = ['/app/repair-scheduler', '/app/repair_scheduler'];
+const STRIP = ['/app/crewgo', '/app/crewgo'];
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -231,7 +231,7 @@ const server = http.createServer((req, res) => {
 
 store.open();
 server.listen(PORT, HOST, () => {
-  log('维修排班已启动 v' + VERSION + ' → http://' + HOST + ':' + PORT);
+  log('速派已启动 v' + VERSION + ' → http://' + HOST + ':' + PORT);
   log('数据目录：' + store.DATA_DIR);
   jobs.start(log);
 });

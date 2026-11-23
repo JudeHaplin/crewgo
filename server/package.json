@@ -1,8 +1,8 @@
 {
-  "name": "repair-scheduler",
+  "name": "crewgo",
   "version": "1.0.0",
   "private": true,
-  "description": "房屋维修预约排期系统 · 自托管版（SQLite + 本地账号 + 定时通知）",
+  "description": "速派 CrewGo · 维修人员预约管理系统（自托管版：SQLite + 本地账号 + 定时通知）",
   "main": "src/index.js",
   "scripts": {
     "start": "node --no-warnings src/index.js",

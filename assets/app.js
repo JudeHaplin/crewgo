@@ -1,12 +1,12 @@
 /* ============================================================
-   维修排班 · 房屋维修预约系统
+   速派 · 房屋维修预约系统
    ============================================================ */
 (function () {
   'use strict';
 
   /* ---------- 云服务配置 ---------- */
   const PUBLIC_CONFIG = {
-    endpoint: 'https://repair-scheduler.app.workbuddy.host',
+    endpoint: 'https://crewgo.app.workbuddy.host',
     publishableKey: 'wbpk_gqUUZ2hKLCYrKZ4UyqXqA5_CIw7f3PsqR5DttPEJ3FNPRgg4HTOSevB',
     oauthRelayBaseUrl: 'https://www.workbuddy.cn/v2/as/genie-baas/oauth'
   };
@@ -144,8 +144,8 @@
     const setup = state.loginMode === 'setup';
     const head =
       '<div class="auth-card">' +
-        '<div class="auth-brand"><span class="brand-mark">维</span><h1>维修排班</h1></div>' +
-        '<p class="auth-sub">房屋维修人员预约与排期系统</p>' +
+        '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派</h1></div>' +
+        '<p class="auth-sub">维修人员预约管理系统</p>' +
         '<h2 class="auth-title">' + (setup ? '初始化管理员' : '登录') + '</h2>' +
         (msg ? '<div class="msg ' + (ok ? 'msg-ok' : '') + '">' + esc(msg) + '</div>' : '') +
         '<p class="auth-desc">' + (setup
@@ -218,8 +218,8 @@
         '</form>';
     }
     return '<div class="auth-card">' +
-      '<div class="auth-brand"><span class="brand-mark">维</span><h1>维修排班</h1></div>' +
-      '<p class="auth-sub">房屋维修人员预约与排期系统</p>' +
+      '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派</h1></div>' +
+      '<p class="auth-sub">维修人员预约管理系统</p>' +
       '<h2 class="auth-title">' + (first ? '开始使用' : '绑定你的身份') + '</h2>' +
       '<p class="auth-desc">' + (first ? '只需一步，之后可随时在设置中调整。' : '绑定后，你的排期、通知都会归到这里。') + '</p>' +
       body +
@@ -1079,7 +1079,7 @@
         body.set('template', 'html');
         body.set('content', String(content).split('\n').filter(Boolean)
           .map(l => '<p style="margin:4px 0">' + esc(l) + '</p>').join('') +
-          '<p style="margin:16px 0 0"><a href="' + esc(link) + '">打开维修排班 →</a></p>');
+          '<p style="margin:16px 0 0"><a href="' + esc(link) + '">打开速派 →</a></p>');
       } else {
         body.set('template', 'txt');
         body.set('content', content);
@@ -1136,7 +1136,7 @@
       '<div style="max-width:560px;margin:0 auto;padding:22px 14px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,PingFang SC,Microsoft YaHei,sans-serif">' +
         '<div style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e6e8ee">' +
           '<div style="padding:18px 22px 16px;border-bottom:1px solid #eef0f4">' +
-            '<div style="font-size:11px;color:#9aa1ad;letter-spacing:.1em;margin-bottom:7px">维修排班</div>' +
+            '<div style="font-size:11px;color:#9aa1ad;letter-spacing:.1em;margin-bottom:7px">速派</div>' +
             '<div style="font-size:19px;font-weight:700;color:#111827;line-height:1.4">' + esc(opt.title) + '</div>' +
             (badge ? '<div style="margin-top:9px">' + badge + '</div>' : '') +
           '</div>' +
@@ -1149,7 +1149,7 @@
             ? '<div style="padding:10px 22px 20px"><a href="' + esc(opt.action.url) + '" style="display:inline-block;padding:11px 18px;background:#2b6ef6;color:#ffffff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600">' + esc(opt.action.text) + '</a></div>'
             : '') +
           '<div style="padding:14px 22px;background:#fafbfc;border-top:1px solid #eef0f4;color:#9aa1ad;font-size:12px;line-height:1.7">' +
-            esc(opt.foot || '这封邮件由「维修排班」自动发出，请勿直接回复。') +
+            esc(opt.foot || '这封邮件由「速派」自动发出，请勿直接回复。') +
           '</div>' +
         '</div>' +
       '</div>' +
@@ -1194,7 +1194,7 @@
       template_params: {
         to_email: to,
         to_name: opt.toName || '',
-        subject: opt.subject || '维修排班通知',
+        subject: opt.subject || '速派通知',
         message: opt.html || esc(opt.text || ''),
         plain_text: opt.text || ''
       }
@@ -1933,7 +1933,7 @@
     const r = await sendMail({
       to: to,
       toName: state.profile.name,
-      subject: '【测试】维修排班邮件通道正常',
+      subject: '【测试】速派邮件通道正常',
       kind: 'test',
       html: mailHtml({
         title: '邮件通道已通',
@@ -1976,7 +1976,7 @@
   function testPush() {
     const token = (state.profile.push_token || '').trim();
     if (!token) { toast('请先填写并保存你的 Token'); return; }
-    const ok = pushWeChat(token, '维修排班 · 测试消息', '这条是测试，能收到说明配置成功。\n时间：' + new Date().toLocaleString('zh-CN'), appLink());
+    const ok = pushWeChat(token, '速派 · 测试消息', '这条是测试，能收到说明配置成功。\n时间：' + new Date().toLocaleString('zh-CN'), appLink());
 
     toast(ok ? '已发送，稍等几秒看微信' : '发送失败，请检查 Token');
   }
@@ -2118,7 +2118,7 @@
       await handleCallback();
       await boot();
     } catch (e) {
-      console.error('[维修排班] 启动失败', e && e.message);
+      console.error('[速派] 启动失败', e && e.message);
       showLogin('加载失败：' + ((e && e.message) || '请刷新页面重试'));
     }
   }

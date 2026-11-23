@@ -1,7 +1,7 @@
 name: release
 
 # 打 tag（v1.0.0 这种）时：
-#   1. 构建多架构镜像推到 ghcr.io/<owner>/repair-scheduler
+#   1. 构建多架构镜像推到 ghcr.io/<owner>/crewgo
 #   2. 在 Linux 上打好 .fpk 并附到 Release
 on:
   push:
@@ -90,7 +90,7 @@ jobs:
 
             **Docker**：
             ```bash
-            docker run -d --name repair-scheduler \
+            docker run -d --name crewgo \
               -p 8080:8080 -v $(pwd)/data:/data \
               --restart unless-stopped \
               ghcr.io/${{ github.repository }}:${{ github.ref_name }}

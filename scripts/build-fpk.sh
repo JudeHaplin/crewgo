@@ -39,7 +39,7 @@ done
 # 生命周期脚本必须有执行权限
 chmod +x "$STAGE"/cmd/* 2>/dev/null || true
 
-echo "打包 repair-scheduler $VERSION（镜像 ghcr.io/$OWNER/repair-scheduler:$VERSION）"
+echo "打包 crewgo $VERSION（镜像 ghcr.io/$OWNER/crewgo:$VERSION）"
 
 # 默认不打签名（本地调试/社区分发够用）。有官方开发者证书时：
 #   KEY=developer.key CERT=developer.crt ./scripts/build-fpk.sh

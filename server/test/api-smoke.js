@@ -104,7 +104,7 @@ const db = (token, q) => api('/api/db', q, token);
   ok((await api('/api/auth/login', { name: '张工', pin: '4321' })).status === 200, '新 PIN 可登录');
 
   console.log('\n[7] 静态资源');
-  for (const p of ['/', '/assets/app.js', '/assets/app.css', '/assets/local-cloud.js', '/favicon.ico', '/app/repair-scheduler/']) {
+  for (const p of ['/', '/assets/app.js', '/assets/app.css', '/assets/local-cloud.js', '/favicon.ico', '/app/crewgo/']) {
     const r = await fetch(BASE + p);
     ok(r.status === 200 || r.status === 404, p + ' → ' + r.status + ' ' + (r.headers.get('content-type') || ''));
   }

@@ -42,9 +42,9 @@ def make(size):
         ))
     img.paste(grad.resize((S, S)), (0, 0), mask)
 
-    # 白色「维」字
+    # 白色「速」字
     f = font(int(S * 0.56))
-    text = '维'
+    text = '速'
     box = d.textbbox((0, 0), text, font=f)
     d.text(((S - (box[2] - box[0])) / 2 - box[0],
             (S - (box[3] - box[1])) / 2 - box[1]), text, font=f, fill=WHITE)

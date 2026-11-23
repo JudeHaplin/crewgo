@@ -32,4 +32,4 @@ jobs:
           kill %1
 
       - name: 构建镜像
-        run: docker build -t repair-scheduler:ci .
+        run: docker build -t crewgo:ci .
