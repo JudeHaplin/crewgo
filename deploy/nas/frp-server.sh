@@ -146,45 +146,24 @@ cat <<EOF
 提示：必须手动做一步 —— 阿里云控制台 → 防火墙 → 放行 TCP $BIND_PORT 和 TCP $PROXY_PORT
 
 ────────────────────────────────────────────
-一、在飞牛上装 frpc（SSH 里执行，整段粘）
+一、在飞牛上装 frpc（这是一整行，一次粘贴）
 ────────────────────────────────────────────
-cd /tmp && curl -fsSL https://ghfast.top/https://github.com/fatedier/frp/releases/download/v$FRP_VERSION/$PKG | tar xz && install -m755 ${SRC##*/}/frpc /usr/local/bin/frpc || install -m755 /tmp/${SRC##*/}/frpc /usr/local/bin/frpc
-mkdir -p /etc/frp
+cd /tmp && curl --noproxy '*' -fsSL -o frp.tgz https://ghfast.top/https://github.com/fatedier/frp/releases/download/v$FRP_VERSION/$PKG && tar xzf frp.tgz && install -m755 ${SRC##*/}/frpc /usr/local/bin/frpc && mkdir -p /etc/frp && frpc -v
+
+  若报 curl: (7) 连不上 127.0.0.1:xxxx，说明飞牛上设过代理且已失效。
+  先执行 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+  （--noproxy '*' 已让 curl 绕过代理，通常不必再清）
+  若 ghfast.top 不通，把网址里的 https://ghfast.top/ 换成 https://gh-proxy.com/
 
 ────────────────────────────────────────────
-二、写入 /etc/frp/frpc.toml（内容如下）
+二、写配置 /etc/frp/frpc.toml（一整行，token 已填好）
 ────────────────────────────────────────────
-serverAddr = "$IP"
-serverPort = $BIND_PORT
-auth.method = "token"
-auth.token = "$TOKEN"
-
-[[proxies]]
-name = "nas-web"
-type = "tcp"
-localIP = "127.0.0.1"
-localPort = $NAS_PORT
-remotePort = $PROXY_PORT
+printf '%s\n' 'serverAddr = "$IP"' 'serverPort = $BIND_PORT' 'auth.method = "token"' 'auth.token = "$TOKEN"' '' '[[proxies]]' 'name = "nas-web"' 'type = "tcp"' 'localIP = "127.0.0.1"' 'localPort = $NAS_PORT' 'remotePort = $PROXY_PORT' > /etc/frp/frpc.toml && cat /etc/frp/frpc.toml
 
 ────────────────────────────────────────────
-三、在飞牛上启动（systemd）
+三、启动（一整行）
 ────────────────────────────────────────────
-cat > /etc/systemd/system/frpc.service <<'UNIT'
-[Unit]
-Description=frp client
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-systemctl daemon-reload && systemctl enable --now frpc && sleep 2 && journalctl -u frpc -n 15 --no-pager
+printf '%s\n' '[Unit]' 'Description=frp client' 'After=network-online.target' 'Wants=network-online.target' '' '[Service]' 'Type=simple' 'ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml' 'Restart=always' 'RestartSec=5' '' '[Install]' 'WantedBy=multi-user.target' > /etc/systemd/system/frpc.service && systemctl daemon-reload && systemctl enable --now frpc && sleep 2 && journalctl -u frpc -n 15 --no-pager
 
 ────────────────────────────────────────────
 完成后浏览器打开： http://$IP:$PROXY_PORT/
