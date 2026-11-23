@@ -1,0 +1,15 @@
+{
+  "name": "repair-scheduler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "房屋维修预约排期系统 · 自托管版（SQLite + 本地账号 + 定时通知）",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --no-warnings src/index.js",
+    "dev": "DATA_DIR=./.data PORT=8080 node --no-warnings src/index.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "license": "MIT"
+}

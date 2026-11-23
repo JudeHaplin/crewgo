@@ -1,0 +1,3 @@
+#!/bin/bash
+echo "维修排班已卸载。如果还要用，数据备份在 ${TRIM_PKGVAR}/backup。"
+exit 0

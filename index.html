@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>维修排班 · 房屋维修预约系统</title>
+<link rel="icon" href="assets/icon.png">
+<link rel="apple-touch-icon" href="assets/icon.png">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+
+<!-- 启动占位 -->
+<div id="boot" class="boot-screen">
+  <div class="spinner"></div>
+  <p>正在加载…</p>
+</div>
+
+<!-- 登录 -->
+<div id="login-view" class="auth-wrap hidden"></div>
+
+<!-- 身份绑定 -->
+<div id="onboard-view" class="auth-wrap hidden"></div>
+
+<!-- 主应用 -->
+<div id="app-view" class="hidden">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark">维</span>
+        <span class="brand-name">维修排班</span>
+      </div>
+      <nav class="mainnav" id="mainnav">
+        <a href="#/board" data-nav="board">排期看板</a>
+        <a href="#/list" data-nav="list">预约单</a>
+        <a href="#/mine" data-nav="mine">我的安排</a>
+        <a href="#/settings" data-nav="settings">设置</a>
+      </nav>
+      <div class="topbar-right">
+        <button class="icon-btn" id="notif-btn" title="通知">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+          <span class="badge hidden" id="notif-badge">0</span>
+        </button>
+        <button class="avatar-btn" id="user-btn">
+          <span class="avatar" id="user-avatar">—</span>
+          <span class="user-name" id="user-name">—</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="page" class="page"></main>
+
+  <nav class="tabbar" id="tabbar">
+    <a href="#/board" data-nav="board">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="17" rx="3"/><path d="M8 2v4M16 2v4M3 10h18"/></svg>
+      <span>排班</span>
+    </a>
+    <a href="#/list" data-nav="list">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1.3"/><circle cx="3.5" cy="12" r="1.3"/><circle cx="3.5" cy="18" r="1.3"/></svg>
+      <span>预约单</span>
+    </a>
+    <a href="#/mine" data-nav="mine">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M9 11l3 3 5-6"/><rect x="3" y="4" width="18" height="17" rx="3"/></svg>
+      <span>我的</span>
+    </a>
+    <a href="#/settings" data-nav="settings">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+      <span>设置</span>
+    </a>
+  </nav>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="assets/local-cloud.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>

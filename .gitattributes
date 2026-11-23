@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.sh text eol=lf
+deploy/fnos/cmd/* text eol=lf
+deploy/fnos/manifest text eol=lf
+*.png binary
+*.PNG binary
+*.fpk binary

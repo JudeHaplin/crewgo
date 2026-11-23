@@ -1,0 +1,11 @@
+data/
+.data/
+node_modules/
+dist/
+*.fpk
+.env
+.DS_Store
+*.log
+.data2/
+.workbuddy/
+.wbapp_*.genie

@@ -1,0 +1,9 @@
+#!/bin/bash
+# 卸载前：自动留一份备份在备份目录，避免误删丢数据
+DATA_DIR="${TRIM_PKGVAR}/data"
+if [ -f "${DATA_DIR}/repair.db" ]; then
+    mkdir -p "${TRIM_PKGVAR}/backup"
+    cp "${DATA_DIR}/repair.db" "${TRIM_PKGVAR}/backup/repair.db.before-uninstall" 2>/dev/null && \
+        echo "已备份数据库到 ${TRIM_PKGVAR}/backup/repair.db.before-uninstall"
+fi
+exit 0

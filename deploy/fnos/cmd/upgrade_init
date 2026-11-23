@@ -1,0 +1,9 @@
+#!/bin/bash
+# 升级前：把数据库备份一份，出问题能回滚
+DATA_DIR="${TRIM_PKGVAR}/data"
+if [ -f "${DATA_DIR}/repair.db" ]; then
+    mkdir -p "${TRIM_PKGVAR}/backup"
+    cp "${DATA_DIR}/repair.db" "${TRIM_PKGVAR}/backup/repair.db.$(date +%Y%m%d%H%M%S)" 2>/dev/null && \
+        echo "已备份数据库到 ${TRIM_PKGVAR}/backup"
+fi
+exit 0

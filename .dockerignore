@@ -1,0 +1,13 @@
+.git
+.gitignore
+.data
+data
+node_modules
+deploy/fnos/build
+dist
+*.fpk
+.workbuddy
+README.md
+docker-compose.yml
+.DS_Store
+server/test

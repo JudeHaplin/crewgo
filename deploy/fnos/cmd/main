@@ -1,0 +1,34 @@
+#!/bin/bash
+# 生命周期脚本：start / stop / status
+# 容器的启停由飞牛应用中心负责，这里只做状态回报。
+
+FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
+DOCKER_NAME="repair-scheduler"
+
+is_docker_running() {
+    if [ -f "$FILE_PATH" ]; then
+        NAME=$(grep "container_name" "$FILE_PATH" | awk -F ':' '{print $2}' | xargs)
+        [ -n "$NAME" ] && DOCKER_NAME="$NAME"
+    fi
+    docker inspect "$DOCKER_NAME" 2>/dev/null | grep -q '"Status": "running",' || return 1
+    return 0
+}
+
+case $1 in
+start)
+    exit 0
+    ;;
+stop)
+    exit 0
+    ;;
+status)
+    if is_docker_running; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    exit 1
+    ;;
+esac
