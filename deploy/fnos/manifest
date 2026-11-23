@@ -18,4 +18,4 @@ desktop_applaunchname = crewgo.Application
 service_port          = 8080
 checkport             = true
 
-changelog             = 首个版本：排期看板、预约单、我的安排、姓名+PIN 登录、人员与项目管理、邮件与微信通知、每天定时出发提醒与派单汇总。
+changelog             = 1.0.2：修复镜像地址含大写字母导致飞牛安装失败（invalid reference format）的问题。1.0.0：排期看板、预约单、我的安排、姓名+PIN 登录、人员与项目管理、邮件与微信通知、每天定时出发提醒与派单汇总。

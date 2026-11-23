@@ -1,5 +1,12 @@
 # 速派 CrewGo · 维修人员预约管理系统
 
+> **AI 项目声明**
+> 本项目的全部代码、页面、部署脚本与文档由 **AI 编程助手（WorkBuddy）生成**，人类负责提出需求、验收与试用反馈。因此：
+> - 代码走的是「够用、简单、单人可维护」的路线，没做过度抽象，也没有多租户/高并发设计；
+> - 业务逻辑（权限、时间、通知去重）有 52 项自动化测试覆盖，但**没有经过长期生产环境检验**；
+> - 建议先在队内小范围试用一到两周，确认排期口径、通知对象都符合你们的习惯，再全面推开。
+> 发现问题欢迎提 Issue，我（和 AI）会继续改。
+
 维修人员的**预约 + 排期 + 派单**系统，给维修队内部用：预约人提单（谁、哪天、去哪、修什么），维修工看自己接下来的安排，统筹一眼看完所有人的日历。
 
 **自托管**：一个容器跑完整套（前端 + 本地数据库 + 定时通知），不依赖任何外部服务，适合放在 NAS 上长期跑。
@@ -52,13 +59,24 @@ docker run -d --name crewgo \
 
 ## 安装到飞牛 fnOS（fpk）
 
-1. 到 [Releases](../../releases) 下载 `crewgo-<版本号>.fpk`
+1. 到 [Releases](../../releases) 下载 `crewgo-<版本号>.fpk`（**请用 1.0.2 或更新版本**）
 2. 飞牛应用中心 → 手动安装 → 选择该文件
 3. 装完从桌面图标打开，第一次进入创建管理员
 
 > fpk 未做开发者签名（CI 用 `--nosign` 构建），安装时可能提示「未签名/未知来源」，允许继续即可。要上架飞牛应用中心需要申请官方开发者证书，然后 `KEY=developer.key CERT=developer.crt ./scripts/build-fpk.sh`。
 
 数据目录在应用安装卷的 `var/data` 下，升级会自动备份，卸载前请先导出。
+
+### 装不上时对照这张表
+
+| 弹窗报错 | 原因 | 处理 |
+|---|---|---|
+| `unable to get image 'ghcr.io/JudeHaplin/crewgo:1.0.x'`<br>`repository name (JudeHaplin/crewgo) must be lowercase` | 镜像地址里带了大写字母，Docker 不认这种名字。1.0.0 / 1.0.1 的打包脚本把 GitHub 用户名原样拼进去了 | 换 **1.0.2+** 的 fpk（脚本已强制转小写，并在打包时自检） |
+| `unauthorized` / `denied` / `manifest unknown` | GHCR 上的容器包是私有，或 tag 还没构建完 | 见上面「拉镜像报 unauthorized」；或等 Actions 跑完 |
+| `context deadline exceeded` / `i/o timeout` | NAS 访问 `ghcr.io` 太慢（国内常见） | 给 NAS 的 Docker 配代理；或在能拉取的机器 `docker pull` 后 `docker save` 成 tar，传到 NAS `docker load`，此时把 compose 里的 `image` 改成你 load 进去的本地名字 |
+| 端口 8080 已被占用 | 别的应用占了这个端口 | 先停掉占用者，或改 fpk 里的 `ports` 映射（如 `18080:8080`） |
+
+手动排查最快的方式：把弹窗里的镜像地址复制出来，在 NAS 的终端执行 `docker pull <那个地址>`，报错就很明确了。
 
 ## 第一次用，按这个顺序
 
@@ -129,14 +147,38 @@ node server/test/run.js api-smoke    # 只跑一个
 
 ```bash
 # 打 fpk（需要官方 fnpack：https://developer.fnnas.com/docs/cli/fnpack/）
-OWNER=<你的GitHub用户名> ./scripts/build-fpk.sh 1.0.0
+# OWNER 写 GitHub 用户名即可（大小写随意），脚本会自动把镜像名部分转成小写
+OWNER=<你的GitHub用户名> ./scripts/build-fpk.sh 1.0.2
 
 # 发布：打 tag 后 GitHub Actions 自动构建镜像 + 打包 fpk 并挂到 Release
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.0.2 && git push origin v1.0.2
 ```
 
 > Windows 上用 fnpack 1.3.3 会在压缩阶段报 `sync ... Access is denied`（工具兼容性问题）。要么在 fnOS/Linux 上打包，要么直接推 tag 让 CI 在 Ubuntu 上打——推荐后者。
 
+> **镜像名必须全小写**：Docker 的镜像地址不允许大写字母，`github.repository_owner` 是 `JudeHaplin`，
+> 直接拼会得到 `ghcr.io/JudeHaplin/crewgo`，飞牛安装时就会报
+> `invalid reference format: repository name must be lowercase`。CI 和 `build-fpk.sh` 都已强制转小写，
+> 并在打包后自检 `image:` 行——如果以后自己改模板，记得别写死大写。
+
+## 参考与致谢
+
+代码是从零写的，没有复制现成项目的源码；但 fpk 目录结构、字段规范、接口用法都大量参照了下面这些官方资料，特此注明：
+
+| 用途 | 参考对象 | 链接 |
+|---|---|---|
+| fpk 包结构、`manifest` / `config` / `privilege` 字段、install/upgrade/uninstall 生命周期脚本 | 飞牛 fnOS 官方开发者文档（应用包规范与示例） | https://developer.fnnas.com/ |
+| `.fpk` 打包与签名 | 官方命令行工具 `fnpack` 1.3.3 | https://developer.fnnas.com/docs/cli/fnpack/ |
+| 本地数据库（零依赖） | Node.js 内置 `node:sqlite` 官方文档（Node ≥ 22.5） | https://nodejs.org/api/sqlite.html |
+| 邮件通道 | EmailJS 文档与模板变量约定（`{{to_email}}` / `{{subject}}` / `{{{message}}}`） | https://www.emailjs.com/docs/ |
+| 微信通道 | PushPlus 推送接口 | https://www.pushplus.plus/doc/ |
+| 多架构镜像、CI/CD | Docker 官方文档、GitHub Actions、`docker/build-push-action`、`docker/metadata-action` | https://docs.docker.com/ |
+| 图标生成 | Pillow（PIL） | https://python-pillow.org/ |
+
+- 图标里的「速」字用系统字体（Windows 微软雅黑 / Linux DejaVu Sans）渲染成 PNG，**字体文件不随包分发**。
+- 前端没有引入框架、也没有 CDN 资源，断网也能用。
+- 若后续引入第三方开源代码，会在这里补上项目名、链接与许可证。
+
 ## 许可
 
-MIT
+MIT，见 [LICENSE](LICENSE)。

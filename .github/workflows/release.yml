@@ -3,13 +3,12 @@ name: release
 # 打 tag（v1.0.0 这种）时：
 #   1. 构建多架构镜像推到 ghcr.io/<owner>/crewgo
 #   2. 在 Linux 上打好 .fpk 并附到 Release
+# 注意：Docker 镜像名必须全小写。GitHub 用户名 JudeHaplin 直接拼进镜像名会被 Docker 拒绝
+#      （invalid reference format: repository name must be lowercase），所以统一转成 judehaplin。
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
-
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   image:
@@ -23,6 +22,10 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
+      - name: 计算镜像名（全小写）
+        id: img
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crewgo" >> "$GITHUB_OUTPUT"
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -32,7 +35,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ steps.img.outputs.image }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -60,6 +63,16 @@ jobs:
         with:
           node-version: '22'
 
+      - name: 计算镜像名与版本号
+        id: vars
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crewgo" >> "$GITHUB_OUTPUT"
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
+            VERSION="$(node -p "require('./server/package.json').version")"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: 安装官方 fnpack
         run: |
           curl -fsSL -o fnpack https://static2.fnnas.com/fnpack/fnpack-1.3.3-linux-amd64
@@ -71,12 +84,10 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [ -z "$VERSION" ] || [ "$VERSION" = "$GITHUB_REF_NAME" ]; then
-            VERSION="$(node -p "require('./server/package.json').version")"
-          fi
-          OWNER="${{ github.repository_owner }}" ./scripts/build-fpk.sh "$VERSION"
+          OWNER="${{ github.repository_owner }}" ./scripts/build-fpk.sh "${{ steps.vars.outputs.version }}"
           ls -lh dist/
+          echo "--- 包内镜像名（必须全小写）---"
+          grep -n 'image:' dist/fpk-src/app/docker/docker-compose.yaml
 
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
@@ -93,8 +104,11 @@ jobs:
             docker run -d --name crewgo \
               -p 8080:8080 -v $(pwd)/data:/data \
               --restart unless-stopped \
-              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+              ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
             ```
-            > 版本号去掉开头的 v，例如 `ghcr.io/${{ github.repository }}:1.0.0`
 
-            > 本 fpk 未签名（CI 用 `--nosign` 构建）。飞牛可能提示未签名/未知来源，允许继续即可；正式上架应用中心需要开发者证书。
+            **拉不到镜像（unauthorized）**：GHCR 的容器包默认私有，到
+            `github.com/users/<owner>/packages/container/crewgo/settings` 底部把可见性改成 Public；
+            或先 `docker login ghcr.io`（令牌勾 `read:packages`）再拉。
+
+            > 本 fpk 未签名（CI 用 `--nosign` 构建），飞牛可能提示未签名/未知来源，允许继续即可；上架应用中心需要官方开发者证书。

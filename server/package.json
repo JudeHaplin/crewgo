@@ -1,6 +1,6 @@
 {
   "name": "crewgo",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "速派 CrewGo · 维修人员预约管理系统（自托管版：SQLite + 本地账号 + 定时通知）",
   "main": "src/index.js",

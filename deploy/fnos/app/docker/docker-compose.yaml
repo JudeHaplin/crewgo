@@ -1,6 +1,7 @@
 services:
   crewgo:
-    image: ghcr.io/{{OWNER}}/crewgo:{{VERSION}}
+    # 注意：Docker 镜像名必须全小写（打包脚本会把用户名转小写后填进这一行，模板里别写死大写）
+    image: {{IMAGE}}:{{VERSION}}
     container_name: crewgo
     restart: unless-stopped
     ports:

@@ -10,6 +10,10 @@ ROOT=$(pwd)
 VERSION="${1:-$(node -p "require('./server/package.json').version")}"
 OWNER="${OWNER:-$(git config --get remote.origin.url 2>/dev/null | sed -E 's#.*[:/]([^/]+)/[^/]+(\.git)?$#\1#' || true)}"
 OWNER="${OWNER:-JudeHaplin}"
+# Docker 镜像名只允许小写：GitHub 用户名是 JudeHaplin 时，镜像必须是 ghcr.io/judehaplin/...
+# 大写会直接安装失败（invalid reference format: repository name must be lowercase），所以这里强制转小写。
+IMAGE_OWNER=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+IMAGE="ghcr.io/$IMAGE_OWNER/crewgo"
 
 FNPACK="${FNPACK:-fnpack}"
 if ! command -v "$FNPACK" >/dev/null 2>&1; then
@@ -28,13 +32,21 @@ cp -R "$ROOT/deploy/fnos/." "$STAGE/"
 rm -rf "$STAGE/.build"
 
 # 替换版本与镜像地址
+#   manifest 里的 {{OWNER}} 用原大小写（GitHub 用户名是给人看的）
+#   docker-compose 里的 {{IMAGE}} 是全小写镜像名前缀
 for f in manifest app/docker/docker-compose.yaml; do
   if [ "$(uname)" = "Darwin" ]; then
-    sed -i '' -e "s/{{VERSION}}/$VERSION/g" -e "s/{{OWNER}}/$OWNER/g" "$STAGE/$f"
+    sed -i '' -e "s/{{VERSION}}/$VERSION/g" -e "s/{{OWNER}}/$OWNER/g" -e "s#{{IMAGE}}#$IMAGE#g" "$STAGE/$f"
   else
-    sed -i -e "s/{{VERSION}}/$VERSION/g" -e "s/{{OWNER}}/$OWNER/g" "$STAGE/$f"
+    sed -i -e "s/{{VERSION}}/$VERSION/g" -e "s/{{OWNER}}/$OWNER/g" -e "s#{{IMAGE}}#$IMAGE#g" "$STAGE/$f"
   fi
 done
+
+# 兜底自检：万一哪天模板改回大写，直接失败，别把坏包发出去
+if grep -q '[A-Z]' <(grep '^ *image:' "$STAGE/app/docker/docker-compose.yaml" | grep -v '^ *#' | sed 's/.*image: *//'); then
+  echo "错误：docker-compose.yaml 里的镜像名含大写：$(grep '^ *image:' "$STAGE/app/docker/docker-compose.yaml")" >&2
+  exit 1
+fi
 
 # 生命周期脚本必须有执行权限
 chmod +x "$STAGE"/cmd/* 2>/dev/null || true
