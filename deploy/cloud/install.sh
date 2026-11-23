@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # 速派 CrewGo · 云服务器一键部署（Linux / 需 root 或 sudo）
 #
-#   bash install.sh                    # 默认 8080 端口，数据放 /opt/crewgo/data
-#   PORT=9080 bash install.sh          # 换端口
+#   bash install.sh                       # 默认 8080 端口，数据放 /opt/crewgo/data
+#   PORT=9080 bash install.sh             # 换端口
 #   IMAGE=ghcr.io/judehaplin/crewgo:1.0.3 bash install.sh
+#   GHCR_MIRROR=1 bash install.sh         # 强制走南大镜像（ghcr.io 拉不动时）
 #
-# 说明：只用 docker，不装 nginx；镜像自带 healthcheck 和自动重启。
+# 只依赖 docker；镜像自带 healthcheck 与自动重启。
 set -euo pipefail
 
 PORT="${PORT:-8080}"
 DATA_DIR="${DATA_DIR:-/opt/crewgo/data}"
 IMAGE="${IMAGE:-ghcr.io/judehaplin/crewgo:1.0.3}"
+TAG="${IMAGE##*:}"
+NAME_PATH="judehaplin/crewgo"
+MIRROR_ROOT="${MIRROR_ROOT:-ghcr.nju.edu.cn}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m提示：\033[0m %s\n' "$*"; }
@@ -19,32 +23,81 @@ die() { printf '\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || die "请用 root 运行：sudo bash install.sh"
 
 # ---------- 1. Docker ----------
+install_docker_apt() {
+  apt-get update -qq || true
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io && return 0
+  # 发行版没带 docker.io，就走阿里云 docker-ce 源
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl gnupg || true
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg || return 1
+  CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-jammy}")"
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://mirrors.aliyun.com/docker-ce/linux/ubuntu $CODENAME stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update -qq || true
+  DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker-ce docker-ce-cli containerd.io
+}
+
+install_docker_rpm() {
+  local pm="$1"
+  $pm install -y docker >/dev/null 2>&1 || $pm install -y docker-ce >/dev/null 2>&1 || true
+  if ! command -v docker >/dev/null 2>&1; then
+    # 阿里云 docker-ce 源（CentOS/RHEL 系，Alibaba Cloud Linux 也能用）
+    $pm install -y dnf-plugins-core >/dev/null 2>&1 || $pm install -y yum-utils >/dev/null 2>&1 || true
+    (dnf config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo 2>/dev/null || \
+     yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo 2>/dev/null) || true
+    $pm install -y docker-ce docker-ce-cli containerd.io >/dev/null 2>&1 || \
+      $pm install -y --releasever=9 docker-ce docker-ce-cli containerd.io >/dev/null 2>&1 || \
+      $pm install -y --releasever=8 docker-ce docker-ce-cli containerd.io >/dev/null 2>&1 || \
+      $pm install -y --nobest docker-ce docker-ce-cli containerd.io >/dev/null 2>&1 || true
+  fi
+  command -v docker >/dev/null 2>&1
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   say "没装 Docker，先装"
+  ok=""
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq || true
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io || curl -fsSL https://get.docker.com | sh
+    install_docker_apt && ok=1
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y docker || curl -fsSL https://get.docker.com | sh
+    install_docker_rpm dnf && ok=1
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y docker || curl -fsSL https://get.docker.com | sh
-  else
-    curl -fsSL https://get.docker.com | sh
+    install_docker_rpm yum && ok=1
   fi
-  systemctl enable --now docker
+  if [ -z "$ok" ]; then
+    say "试官方脚本 get.docker.com"
+    curl -fsSL https://get.docker.com | sh || die "Docker 装不上。最省事的办法：在阿里云控制台把这台机器「重置系统」为 Docker 应用镜像（约 2 分钟），再回来跑本脚本。"
+  fi
 fi
-systemctl is-active --quiet docker || systemctl start docker
+systemctl enable --now docker >/dev/null 2>&1 || systemctl start docker
+systemctl is-active --quiet docker || die "Docker 没起来，试试 systemctl status docker 看原因"
 
 # ---------- 2. 拉镜像 ----------
-say "拉取镜像 $IMAGE（首次约 60MB，慢的话会重试）"
+pull_once() { docker pull "$1" >/dev/null 2>&1; }
+
+say "拉取镜像 $IMAGE（约 60MB）"
 ok=""
-for i in 1 2 3 4 5; do
-  if docker pull "$IMAGE"; then ok=1; break; fi
-  warn "第 $i 次拉取失败，10 秒后重试"
-  sleep 10
-done
+if [ "${GHCR_MIRROR:-0}" = "1" ]; then
+  MIRRORED="$MIRROR_ROOT/$NAME_PATH:$TAG"
+  say "按参数走镜像：$MIRRORED"
+  if pull_once "$MIRRORED"; then docker tag "$MIRRORED" "$IMAGE"; ok=1; fi
+else
+  for i in 1 2 3; do
+    if pull_once "$IMAGE"; then ok=1; break; fi
+    warn "第 $i 次没拉下来，10 秒后重试"
+    sleep 10
+  done
+fi
+
 if [ -z "$ok" ]; then
-  die "镜像拉不下来。办法：①再跑一次本脚本；②在能上 ghcr.io 的电脑上 docker pull 后 docker save 成 tar，scp 到本机再 docker load；③自己 git clone 后 docker build -t crewgo:local ."
+  MIRRORED="$MIRROR_ROOT/$NAME_PATH:$TAG"
+  warn "ghcr.io 直连不顺，改走南大镜像：$MIRRORED"
+  if pull_once "$MIRRORED"; then
+    docker tag "$MIRRORED" "$IMAGE"
+    ok=1
+  fi
+fi
+
+if [ -z "$ok" ]; then
+  die "镜像拉不下来。可行办法：①过一会儿再跑一次本脚本；②在能访问 ghcr.io 的电脑上 docker pull 后 docker save 成 tar，scp 到本机再 docker load -i；③拉源码 docker build -t crewgo:local . 然后把 IMAGE=crewgo:local 传进来"
 fi
 
 # ---------- 3. 启动 ----------
@@ -77,7 +130,7 @@ for i in $(seq 1 30); do
     echo "  数据目录：   $DATA_DIR（备份就是拷这个目录）"
     echo "  看日志：     docker logs -f crewgo"
     echo
-    warn "如果打不开，先到云控制台的「防火墙 / 安全组」放行 TCP $PORT。"
+    warn "如果浏览器打不开，先到云控制台的「防火墙 / 安全组」放行 TCP $PORT。"
     exit 0
   fi
   sleep 2
