@@ -30,6 +30,11 @@
   const PALETTE = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2', '#d94690', '#65a30d'];
   const DOW = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
+  /* PIN 规则：字母、数字、符号都允许，只限长度；后端同规则校验 */
+  const PIN_MIN = 4;
+  const PIN_MAX = 32;
+  const PIN_TIP = '至少 ' + PIN_MIN + ' 位，字母、数字、符号都行，区分大小写';
+
   /* ---------- 工具 ---------- */
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => Array.prototype.slice.call(r.querySelectorAll(s));
@@ -46,6 +51,17 @@
     if (v === null || v === undefined) return '';
     return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  /** 登录凭证统一处理：去掉首尾空格（中间的空格保留），避免手机键盘尾随空格导致登录失败 */
+  const normPin = v => String(v === null || v === undefined ? '' : v).trim();
+  /** 返回错误文案，空串表示通过；规则与服务端一致 */
+  function pinError(pin) {
+    const p = normPin(pin);
+    if (p.length < PIN_MIN) return 'PIN 至少 ' + PIN_MIN + ' 位';
+    if (p.length > PIN_MAX) return 'PIN 最多 ' + PIN_MAX + ' 位';
+    return '';
+  }
+  /** PIN 输入框公共属性：不用数字键盘，关掉首字母大写与自动纠错（否则字母 PIN 会被改掉） */
+  const PIN_ATTRS = ' inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="' + PIN_MAX + '"';
   function dayLabel(dateStr) {
     const d = parseYmd(dateStr);
     return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + DOW[(d.getDay() + 6) % 7];
@@ -158,9 +174,11 @@
           '<div class="field"><label for="st-name">你的姓名</label>' +
             '<input class="input" id="st-name" name="name" placeholder="如：王建国" required maxlength="20"></div>' +
           '<div class="field"><label for="st-pin">设置 PIN</label>' +
-            '<input class="input" id="st-pin" name="pin" type="password" inputmode="numeric" maxlength="12" placeholder="至少 4 位数字"></div>' +
+            '<div class="pin-wrap"><input class="input" id="st-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位" autocomplete="new-password">' +
+            '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div>' +
+            '<div class="hint">' + PIN_TIP + '</div></div>' +
           '<div class="field"><label for="st-pin2">再输一次</label>' +
-            '<input class="input" id="st-pin2" name="pin2" type="password" inputmode="numeric" maxlength="12" placeholder="确认 PIN"></div>' +
+            '<input class="input" id="st-pin2" name="pin2" type="password"' + PIN_ATTRS + ' placeholder="确认 PIN" autocomplete="new-password"></div>' +
           '<button class="btn btn-primary btn-block" type="submit">创建管理员账号</button>' +
         '</form>' +
         '<p class="auth-foot"><a href="#" data-act="login-mode" data-mode="login" style="color:var(--text-3)">已有账号，去登录</a></p>' +
@@ -172,7 +190,8 @@
         '<div class="field"><label for="lg-name">姓名</label>' +
           '<input class="input" id="lg-name" name="name" placeholder="你的姓名" required maxlength="20" autocomplete="username"></div>' +
         '<div class="field"><label for="lg-pin">PIN</label>' +
-          '<input class="input" id="lg-pin" name="pin" type="password" inputmode="numeric" maxlength="12" placeholder="4 位以上数字" autocomplete="current-password"></div>' +
+          '<div class="pin-wrap"><input class="input" id="lg-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="你的 PIN" autocomplete="current-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div></div>' +
         '<button class="btn btn-primary btn-block" type="submit">登录</button>' +
       '</form>' +
       '<p class="auth-foot">忘记 PIN 找统筹在「设置 → 人员」里重设<br>' +
@@ -880,9 +899,10 @@
       '</div></div>' +
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">修改登录 PIN</h3></div><div class="card-body">' +
         '<div class="form-row">' +
-          '<div class="field"><label>原 PIN</label><input class="input" data-field="pin_old" type="password" inputmode="numeric" maxlength="12" placeholder="当前 PIN"></div>' +
-          '<div class="field"><label>新 PIN</label><input class="input" data-field="pin_new" type="password" inputmode="numeric" maxlength="12" placeholder="至少 4 位"></div>' +
+          '<div class="field"><label>原 PIN</label><input class="input" data-field="pin_old" type="password"' + PIN_ATTRS + ' placeholder="当前 PIN"></div>' +
+          '<div class="field"><label>新 PIN</label><input class="input" data-field="pin_new" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位"></div>' +
         '</div>' +
+        '<div class="hint" style="margin-bottom:10px">' + PIN_TIP + '</div>' +
         '<button class="btn btn-sm btn-primary" data-act="change-pin">保存新 PIN</button>' +
       '</div></div>' +
       '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center">' +
@@ -1500,6 +1520,7 @@
       case 'run-reminders': manualReminders(el); break;
       case 'enable-desktop': enableDesktop(); break;
       case 'change-pin': changeMyPin(); break;
+      case 'peek': togglePeek(el); break;
       case 'open-notifs': openNotifPanel(); break;
       case 'mark-all-read': markAllRead(); break;
       case 'notif-open': openNotifById(id); break;
@@ -1561,7 +1582,7 @@
   /* ---------- 登录动作（本地账号：姓名 + PIN） ---------- */
   async function submitLogin(f) {
     const name = (f.elements.name.value || '').trim();
-    const pin = (f.elements.pin.value || '').trim();
+    const pin = normPin(f.elements.pin.value);
     if (!name) { toast('请填写姓名'); return; }
     if (!pin) { toast('请填写 PIN'); return; }
 
@@ -1590,7 +1611,8 @@
     const pin = (f.elements.pin.value || '').trim();
     const pin2 = (f.elements.pin2.value || '').trim();
     if (!name) { toast('请填写姓名'); return; }
-    if (pin.length < 4) { toast('PIN 至少 4 位'); return; }
+    const pe = pinError(pin);
+    if (pe) { toast(pe); return; }
     if (pin !== pin2) { toast('两次输入的 PIN 不一致'); return; }
 
     const btn = f.querySelector('button[type="submit"]');
@@ -1832,7 +1854,8 @@
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" value="' + esc(p ? p.phone || '' : '') + '" maxlength="20"></div>' +
         '</div>' +
         '<div class="field"><label>邮箱（选填）</label><input class="input" type="email" name="email" value="' + esc(p ? p.email || '' : '') + '" placeholder="派单和出发提醒会发到这里"></div>' +
-        '<div class="field"><label>登录 PIN' + (p ? '（留空则不修改）' : '（至少 4 位）') + '</label><input class="input" name="pin" type="text" inputmode="numeric" maxlength="12" value="" placeholder="' + (p ? '重设 PIN 时填这里' : '员工用姓名 + PIN 登录') + '"></div>' +
+        '<div class="field"><label>登录 PIN' + (p ? '（留空则不修改）' : '（至少 4 位）') + '</label><input class="input" name="pin" type="text"' + PIN_ATTRS + ' value="" placeholder="' + (p ? '重设 PIN 时填这里' : '员工用姓名 + PIN 登录') + '">' +
+          '<div class="hint">' + PIN_TIP + (p ? '；留空保持原 PIN 不变' : '；留空则用默认 PIN：1234') + '</div></div>' +
         '<div class="field"><label>身份</label><select class="select" name="role">' +
           ['tech', 'requester', 'admin'].map(r => '<option value="' + r + '"' + ((p ? p.role : 'tech') === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
         '</select></div>' +
@@ -1859,7 +1882,7 @@
     const email = (f.elements.email ? String(f.elements.email.value || '') : '').trim();
     if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
     const pin = (f.elements.pin ? String(f.elements.pin.value || '') : '').trim();
-    if (pin && pin.length < 4) { toast('PIN 至少 4 位'); return; }
+    if (pin) { const pe = pinError(pin); if (pe) { toast(pe); return; } }
     const payload = {
       name: name,
       phone: (f.elements.phone.value || '').trim() || null,
@@ -2011,14 +2034,28 @@
     else toast('没有需要提醒的单（已提醒过，或相关人还没填 token）', 3200);
   }
 
+  /** 切换 PIN 明文/密文，含符号的 PIN 可以核对一下再提交 */
+  function togglePeek(btn) {
+    const wrap = btn.closest('.pin-wrap');
+    const input = wrap && wrap.querySelector('input');
+    if (!input) return;
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.textContent = show ? '隐藏' : '显示';
+    btn.classList.toggle('on', show);
+    try { input.focus({ preventScroll: true }); } catch (e) { /* 老浏览器忽略 */ }
+  }
+
   async function changeMyPin() {
     const oldEl = $('[data-field="pin_old"]');
     const newEl = $('[data-field="pin_new"]');
     if (!oldEl || !newEl) return;
-    const oldPin = oldEl.value.trim();
-    const newPin = newEl.value.trim();
+    const oldPin = normPin(oldEl.value);
+    const newPin = normPin(newEl.value);
     if (!oldPin) { toast('请填写原 PIN'); return; }
-    if (newPin.length < 4) { toast('新 PIN 至少 4 位'); return; }
+    const pe = pinError(newPin);
+    if (pe) { toast(pe); return; }
+    if (newPin === oldPin) { toast('新 PIN 和原 PIN 一样，换个别的吧'); return; }
     const { error } = await cloud.auth.changePin(oldPin, newPin);
     if (error) { toast('修改失败：' + error.message, 3600); return; }
     oldEl.value = ''; newEl.value = '';

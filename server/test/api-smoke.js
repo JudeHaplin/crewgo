@@ -103,6 +103,21 @@ const db = (token, q) => api('/api/db', q, token);
   ok((await api('/api/auth/login', { name: '张工', pin: '5678' })).status === 401, '旧 PIN 失效');
   ok((await api('/api/auth/login', { name: '张工', pin: '4321' })).status === 200, '新 PIN 可登录');
 
+  console.log('\n[6b] PIN 支持字母、数字、符号');
+  const strongPin = 'Crew#2026!x';
+  const chg2 = await api('/api/auth/pin', { oldPin: '4321', newPin: strongPin }, token);
+  ok(chg2.status === 200, '可设含字母和符号的 PIN');
+  ok((await api('/api/auth/login', { name: '张工', pin: strongPin })).status === 200, '字母符号 PIN 可登录');
+  const caseWrong = await api('/api/auth/login', { name: '张工', pin: 'crew#2026!x' });
+  ok(caseWrong.status === 401, 'PIN 区分大小写');
+  ok((await api('/api/auth/login', { name: '张工', pin: strongPin + '  ' })).status === 200, '首尾空格被忽略');
+  const tooShort = await api('/api/auth/pin', { oldPin: strongPin, newPin: 'ab' }, token);
+  ok(tooShort.status === 400, '过短的新 PIN 被拒绝');
+  const tooLong = await api('/api/auth/pin', { oldPin: strongPin, newPin: 'x'.repeat(33) }, token);
+  ok(tooLong.status === 400, '超长的新 PIN 被拒绝');
+  // 复原，避免影响后续人工排查
+  await api('/api/auth/pin', { oldPin: strongPin, newPin: '4321' }, token);
+
   console.log('\n[7] 静态资源');
   for (const p of ['/', '/assets/app.js', '/assets/app.css', '/assets/local-cloud.js', '/favicon.ico', '/app/crewgo/']) {
     const r = await fetch(BASE + p);

@@ -37,6 +37,17 @@ const MIME = {
 const log = msg => console.log(new Date().toLocaleString('zh-CN', { hour12: false }) + '  ' + msg);
 const fail = (res, code, msg) => send(res, code, { error: msg });
 
+/* ---------- PIN 规则：只限长度，字母/数字/符号都可以（与前端一致） ---------- */
+const PIN_MIN = 4;
+const PIN_MAX = 32;
+/** 去掉首尾空格（中间空格属于 PIN 的一部分，保留），避免手机键盘尾随空格导致登录失败 */
+const normPin = v => String(v === null || v === undefined ? '' : v).trim();
+function pinError(pin) {
+  if (pin.length < PIN_MIN) return 'PIN 至少 ' + PIN_MIN + ' 位';
+  if (pin.length > PIN_MAX) return 'PIN 最多 ' + PIN_MAX + ' 位（字母、数字、符号都可以）';
+  return '';
+}
+
 function send(res, code, payload) {
   const buf = Buffer.from(JSON.stringify(payload));
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': buf.length, 'Cache-Control': 'no-store' });
@@ -106,9 +117,10 @@ async function handleApi(req, res, pathname) {
     if (Number(row.n) > 0) return fail(res, 409, '系统已经初始化过了，请直接用姓名和 PIN 登录');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
-    const pin = String(body.pin || '');
+    const pin = normPin(body.pin);
     if (!name) return fail(res, 400, '请填写姓名');
-    if (pin.length < 4) return fail(res, 400, 'PIN 至少 4 位');
+    const pe = pinError(pin);
+    if (pe) return fail(res, 400, pe);
     const id = 'p_' + Math.random().toString(36).slice(2, 10);
     store.raw().prepare(
       "INSERT INTO profiles (id, name, phone, role, color, pin_hash, active, user_id) VALUES (?,?,?,?,?,?,1,?)"
@@ -122,7 +134,7 @@ async function handleApi(req, res, pathname) {
     if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
-    const pin = String(body.pin || '');
+    const pin = normPin(body.pin);
     if (!name || !pin) return fail(res, 400, '请输入姓名和 PIN');
     const row = store.raw().prepare('SELECT * FROM profiles WHERE lower(name) = lower(?)').get(name);
     if (!row || row.active === 0 || !auth.verifyPin(pin, row.pin_hash)) {
@@ -146,9 +158,12 @@ async function handleApi(req, res, pathname) {
     if (!actor) return fail(res, 401, '未登录');
     const body = await readBody(req);
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
-    if (!auth.verifyPin(String(body.oldPin || ''), row.pin_hash)) return fail(res, 400, '原 PIN 不对');
-    if (String(body.newPin || '').length < 4) return fail(res, 400, '新 PIN 至少 4 位');
-    store.raw().prepare('UPDATE profiles SET pin_hash = ? WHERE id = ?').run(auth.hashPin(String(body.newPin)), actor.id);
+    if (!auth.verifyPin(normPin(body.oldPin), row.pin_hash)) return fail(res, 400, '原 PIN 不对');
+    const newPin = normPin(body.newPin);
+    const pe = pinError(newPin);
+    if (pe) return fail(res, 400, pe);
+    if (newPin === normPin(body.oldPin)) return fail(res, 400, '新 PIN 和原 PIN 一样');
+    store.raw().prepare('UPDATE profiles SET pin_hash = ? WHERE id = ?').run(auth.hashPin(newPin), actor.id);
     return send(res, 200, { ok: true });
   }
 
@@ -158,8 +173,11 @@ async function handleApi(req, res, pathname) {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '登录已过期，请重新登录');
     const body = await readBody(req);
-    if (body && body.values && body.values.pin) {
-      body.values.pin_hash = auth.hashPin(String(body.values.pin));
+    if (body && body.values && body.values.pin != null && body.values.pin !== '') {
+      const p = normPin(body.values.pin);
+      const pe = pinError(p);
+      if (pe) return fail(res, 400, pe);
+      body.values.pin_hash = auth.hashPin(p);
     }
     const result = store.run(actor, body);
     return send(res, 200, result);

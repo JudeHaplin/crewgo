@@ -88,6 +88,16 @@ input,select,textarea{font-family:inherit;font-size:14px}
 .input-group{display:flex;gap:8px}
 .input-group .input{flex:1}
 .input-err{color:var(--danger);font-size:12px;margin-top:5px}
+/* PIN 输入框右侧的「显示/隐藏」，方便核对字母和符号 */
+.pin-wrap{position:relative}
+.pin-wrap .input{padding-right:58px}
+.pin-eye{
+  position:absolute;right:5px;top:50%;transform:translateY(-50%);
+  border:0;background:transparent;color:var(--text-3);font-size:12px;
+  font-family:inherit;line-height:1;padding:7px 9px;border-radius:7px;cursor:pointer;
+}
+.pin-eye:hover{color:var(--primary)}
+.pin-eye.on{color:var(--primary);background:rgba(43,110,246,.08)}
 
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
