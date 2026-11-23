@@ -9,7 +9,7 @@ ROOT=$(pwd)
 
 VERSION="${1:-$(node -p "require('./server/package.json').version")}"
 OWNER="${OWNER:-$(git config --get remote.origin.url 2>/dev/null | sed -E 's#.*[:/]([^/]+)/[^/]+(\.git)?$#\1#' || true)}"
-OWNER="${OWNER:-haplin}"
+OWNER="${OWNER:-JudeHaplin}"
 
 FNPACK="${FNPACK:-fnpack}"
 if ! command -v "$FNPACK" >/dev/null 2>&1; then

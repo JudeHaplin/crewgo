@@ -26,7 +26,7 @@
 ## 快速开始（Docker）
 
 ```bash
-git clone https://github.com/<你的用户名>/crewgo.git
+git clone https://github.com/JudeHaplin/crewgo.git
 cd crewgo
 
 docker compose up -d --build
@@ -40,7 +40,7 @@ docker run -d --name crewgo \
   -p 8080:8080 \
   -v $(pwd)/data:/data \
   --restart unless-stopped \
-  ghcr.io/<你的用户名>/crewgo:latest
+  ghcr.io/judehaplin/crewgo:latest
 ```
 
 首次打开会自动进入**初始化**：填姓名和 PIN，这个账号就是统筹管理员。
