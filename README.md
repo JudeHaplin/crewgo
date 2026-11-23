@@ -57,6 +57,92 @@ docker run -d --name crewgo \
 > Change visibility → Public，改成公开后即可匿名拉取。
 > 不想公开也行，先 `docker login ghcr.io`（用个人令牌，勾 `read:packages`）再拉。
 
+## 部署到云服务器（阿里云轻量 / 任意 VPS）
+
+NAS 上的飞牛网关偶尔会闹脾气，云服务器是最省事的路子：公网 IP、24 小时在线、手机流量也能访问。
+
+### 怎么选
+
+| 项 | 建议 | 说明 |
+|---|---|---|
+| 产品 | **轻量应用服务器**（不是 ECS） | 便宜、带固定公网 IP、控制台简单，2核2G 年付百元级足够 |
+| 地域 | 选离使用的人近的（北京 / 杭州 / 深圳 / 广州） | 30 人看页面，延迟差别很小；但**地域决定备案归属** |
+| 镜像 | **Ubuntu 24.04 LTS** | Docker 兼容最好；Alibaba Cloud Linux 也行 |
+| 规格 | **2 核 2G** 起 | 应用本身只吃几十 MB 内存，但 Docker 拉镜像/构建时 1G 会紧张 |
+| 磁盘 | 40G 系统盘 | 镜像约 60MB，数据几 MB，够用很久 |
+| 带宽/流量 | 200Mbps 峰值 + 月流量包 | 你们一个月顶多用几个 G，随便选最便宜的档 |
+| 续费 | **一定看续费价** | 新客 79/年，续费常是 300+/年，别只看首年 |
+
+### 备案这件事（很重要）
+
+- **只用 `http://公网IP:8080` 访问 → 不需要备案**，买完十几分钟就能用。
+- **想用域名 + 80/443 访问 → 必须 ICP 备案**（域名要实名，服务器在大陆地域），阿里云免费代办，通常 1–2 周；没备案的域名解析到大陆机器会被拦。
+- 不想备案又要域名：买**阿里云香港**地域，代价是延迟略高。
+
+### 部署步骤（约 10 分钟）
+
+1. **买完先重置密码**：控制台 → 服务器 → 「重置密码」，设一个 root 密码。
+2. **放行端口**：轻量服务器 → 「防火墙」→ 添加规则，TCP `8080`（想更低调就换个端口，比如 `9080`，脚本支持 `PORT=9080`）。
+3. **SSH 登录**：
+
+   ```bash
+   ssh root@<你的公网IP>
+   ```
+
+4. **跑一条命令**（把仓库里的脚本拉下来执行；网络不通就按下一步手动贴命令）：
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | bash
+   ```
+
+   脚本干三件事：没 Docker 就装、拉镜像（失败重试 5 次）、起容器并自检。跑完会直接打印访问地址。
+
+5. **手动版**（不依赖 raw.githubusercontent.com，任何一步失败就用这个）：
+
+   ```bash
+   # 装 Docker（Ubuntu/Debian）
+   apt-get update && apt-get install -y docker.io
+   systemctl enable --now docker
+
+   # 拉镜像并启动
+   docker run -d --name crewgo --restart unless-stopped \
+     -p 8080:8080 -v /opt/crewgo/data:/data \
+     -e TZ=Asia/Shanghai -e PORT=8080 -e DIGEST_HOUR=8 \
+     ghcr.io/judehaplin/crewgo:1.0.3
+
+   # 自检
+   curl -I http://127.0.0.1:8080/api/health
+   ```
+
+6. 浏览器打开 `http://<公网IP>:8080/`，第一个进入的人创建统筹管理员账号。
+
+### 想要域名 + HTTPS（备案通过后再做）
+
+用 Caddy 反代，证书自动续：
+
+```bash
+apt-get install -y caddy
+cat >/etc/caddy/Caddyfile <<'EOF'
+crewgo.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+EOF
+systemctl restart caddy
+```
+
+然后把 80/443 也放行，域名 A 记录指向公网 IP。Caddy 会自动申请 Let's Encrypt 证书。
+
+### 日常维护
+
+```bash
+docker logs -f crewgo                    # 看日志（1.0.3 起每个请求一行）
+docker restart crewgo                    # 重启
+docker rm -f crewgo && bash install.sh   # 升级到新版本（数据在 /opt/crewgo/data 不动）
+tar czf crewgo-data-$(date +%F).tgz -C /opt crewgo/data   # 备份
+```
+
+**公网暴露后的安全建议**：管理员 PIN 别用 `1234`，至少 6 位；端口别用 8080 以外的常见端口无所谓，但一定要放行规则精确到 TCP；SSH 建议改成密钥登录并禁用密码。
+
 ## 安装到飞牛 fnOS（fpk）
 
 1. 到 [Releases](../../releases) 下载 `crewgo-<版本号>.fpk`（**请用 1.0.2 或更新版本**）
