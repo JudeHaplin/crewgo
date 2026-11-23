@@ -6,6 +6,7 @@
  */
 const http = require('node:http');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const store = require('./store');
 const auth = require('./auth');
@@ -13,6 +14,8 @@ const jobs = require('./jobs');
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
+// 排障用：ACCESS_LOG=0 可关掉每个请求一行日志
+const ACCESS_LOG = process.env.ACCESS_LOG !== '0';
 const ROOT = process.env.APP_ROOT || path.join(__dirname, '..', '..');
 const VERSION = require('../package.json').version;
 // 飞牛 fnOS 网关会把 /app/<appname>/ 反代进来，这里统一剥掉前缀
@@ -218,6 +221,14 @@ const server = http.createServer((req, res) => {
   let pathname = url.pathname;
   for (const p of STRIP) if (pathname.startsWith(p)) { pathname = pathname.slice(p.length) || '/'; break; }
 
+  if (ACCESS_LOG) {
+    const started = Date.now();
+    res.on('finish', () => {
+      const via = req.headers['x-forwarded-proto'] ? ' via=' + req.headers['x-forwarded-proto'] : '';
+      log(req.method + ' ' + pathname + ' → ' + res.statusCode + ' ' + (Date.now() - started) + 'ms  host=' + (req.headers.host || '-') + via);
+    });
+  }
+
   if (pathname.startsWith('/api/')) {
     handleApi(req, res, pathname).catch(err => {
       const code = err.status || 500;
@@ -231,8 +242,14 @@ const server = http.createServer((req, res) => {
 
 store.open();
 server.listen(PORT, HOST, () => {
-  log('速派已启动 v' + VERSION + ' → http://' + HOST + ':' + PORT);
+  log('速派已启动 v' + VERSION + ' → 监听 ' + HOST + ':' + PORT);
   log('数据目录：' + store.DATA_DIR);
+  // 把局域网地址直接打出来，装完在日志里就能看到该用哪个地址打开
+  const lan = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const ni of list || []) if (ni.family === 'IPv4' && !ni.internal) lan.push(ni.address);
+  }
+  if (lan.length) log('浏览器打开：' + lan.map(a => 'http://' + a + ':' + PORT + '/').join('  或  '));
   jobs.start(log);
 });
 

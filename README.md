@@ -72,11 +72,26 @@ docker run -d --name crewgo \
 | 弹窗报错 | 原因 | 处理 |
 |---|---|---|
 | `unable to get image 'ghcr.io/JudeHaplin/crewgo:1.0.x'`<br>`repository name (JudeHaplin/crewgo) must be lowercase` | 镜像地址里带了大写字母，Docker 不认这种名字。1.0.0 / 1.0.1 的打包脚本把 GitHub 用户名原样拼进去了 | 换 **1.0.2+** 的 fpk（脚本已强制转小写，并在打包时自检） |
+| 装好了，但点桌面图标 / 打开 `xxx.fnos.net` 报 **HTTP 502**「该网页无法正常运作」 | 飞牛网关连不到应用端口：bridge + `ports` 映射在部分 fnOS 版本上，网关拿不到容器端口 | 换 **1.0.3+** 的 fpk（容器改 host 网络，网关直接连 `127.0.0.1:8080`）；仍不通就先用日志里打印的 `http://<NAS局域网IP>:8080/` 直连 |
 | `unauthorized` / `denied` / `manifest unknown` | GHCR 上的容器包是私有，或 tag 还没构建完 | 见上面「拉镜像报 unauthorized」；或等 Actions 跑完 |
 | `context deadline exceeded` / `i/o timeout` | NAS 访问 `ghcr.io` 太慢（国内常见） | 给 NAS 的 Docker 配代理；或在能拉取的机器 `docker pull` 后 `docker save` 成 tar，传到 NAS `docker load`，此时把 compose 里的 `image` 改成你 load 进去的本地名字 |
-| 端口 8080 已被占用 | 别的应用占了这个端口 | 先停掉占用者，或改 fpk 里的 `ports` 映射（如 `18080:8080`） |
+| 端口 8080 已被占用 | 别的应用占了这个端口（host 网络下更要注意） | 先停掉占用者，或同时改 compose 里的 `PORT` 与 manifest 的 `service_port` |
 
 手动排查最快的方式：把弹窗里的镜像地址复制出来，在 NAS 的终端执行 `docker pull <那个地址>`，报错就很明确了。
+
+### 界面打不开时看日志
+
+1.0.3 起，应用「运行日志」里会直接打出可访问地址和一个请求日志：
+
+```
+速派已启动 v1.0.3 → 监听 0.0.0.0:8080
+数据目录：/data
+浏览器打开：http://192.168.1.10:8080/
+```
+
+- 用这个 `http://192.168.1.10:8080/` 能打开 → 应用没问题，是飞牛域名/反代这一段的事，可以直接用 IP 访问，或在飞牛「远程访问」里把该应用加进可访问列表。
+- 用 IP 也打不开 → 端口没通：`docker ps` 看容器状态、`ss -lnt | grep 8080` 看宿主有没有在听。
+- 打开域名时日志里**没有任何 `GET /` 记录** → 请求没到应用，问题在网关层；有记录但浏览器仍是 5xx → 把日志里那行 `host=...` 发我。
 
 ## 第一次用，按这个顺序
 

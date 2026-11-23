@@ -4,8 +4,11 @@ services:
     image: {{IMAGE}}:{{VERSION}}
     container_name: crewgo
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    # 用 host 网络：飞牛网关按 manifest 的 service_port 反代到 127.0.0.1:8080。
+    # 走 bridge + 端口映射时，部分 fnOS 版本上网关连不到容器端口，页面会报 HTTP 502。
+    # host 网络下容器直接用宿主网络栈，127.0.0.1:8080 一定通。
+    # 代价：宿主 8080 必须空着；要换端口就同时改这里的 PORT 和 manifest 的 service_port。
+    network_mode: host
     environment:
       - TZ=Asia/Shanghai
       - PORT=8080
