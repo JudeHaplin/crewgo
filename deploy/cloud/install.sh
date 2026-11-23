@@ -73,27 +73,32 @@ systemctl is-active --quiet docker || die "Docker 没起来，试试 systemctl s
 # ---------- 2. 拉镜像 ----------
 pull_once() { docker pull "$1" >/dev/null 2>&1; }
 
+# 先探一下 ghcr.io 通不通（/v2/ 正常返回 401，说明网络能到）
+ghcr_reachable() {
+  local code
+  code=$(curl -s -m 6 -o /dev/null -w '%{http_code}' https://ghcr.io/v2/ 2>/dev/null || echo 000)
+  [ "$code" = "200" ] || [ "$code" = "401" ]
+}
+
+MIRRORED="$MIRROR_ROOT/$NAME_PATH:$TAG"
+use_mirror() {
+  warn "改走国内镜像：$MIRRORED"
+  if pull_once "$MIRRORED"; then docker tag "$MIRRORED" "$IMAGE"; return 0; fi
+  return 1
+}
+
 say "拉取镜像 $IMAGE（约 60MB）"
 ok=""
-if [ "${GHCR_MIRROR:-0}" = "1" ]; then
-  MIRRORED="$MIRROR_ROOT/$NAME_PATH:$TAG"
-  say "按参数走镜像：$MIRRORED"
-  if pull_once "$MIRRORED"; then docker tag "$MIRRORED" "$IMAGE"; ok=1; fi
+if [ "${GHCR_MIRROR:-0}" = "1" ] || ! ghcr_reachable; then
+  [ "${GHCR_MIRROR:-0}" = "1" ] || warn "ghcr.io 连不上（国内常见），直接用镜像源"
+  use_mirror && ok=1
 else
-  for i in 1 2 3; do
+  for i in 1 2; do
     if pull_once "$IMAGE"; then ok=1; break; fi
-    warn "第 $i 次没拉下来，10 秒后重试"
-    sleep 10
+    warn "第 $i 次没拉下来"
+    sleep 5
   done
-fi
-
-if [ -z "$ok" ]; then
-  MIRRORED="$MIRROR_ROOT/$NAME_PATH:$TAG"
-  warn "ghcr.io 直连不顺，改走南大镜像：$MIRRORED"
-  if pull_once "$MIRRORED"; then
-    docker tag "$MIRRORED" "$IMAGE"
-    ok=1
-  fi
+  if [ -z "$ok" ]; then use_mirror && ok=1; fi
 fi
 
 if [ -z "$ok" ]; then
@@ -102,6 +107,9 @@ fi
 
 # ---------- 3. 启动 ----------
 mkdir -p "$DATA_DIR"
+# 容器里应用以 node 用户（uid/gid 1000）运行，宿主机目录必须给它写权限，
+# 否则 SQLite 打不开数据文件，页面能开但一保存就 500。
+chown -R 1000:1000 "$DATA_DIR" 2>/dev/null || warn "改不动 $DATA_DIR 的属主，若起不来请看 docker logs crewgo"
 if docker ps -a --format '{{.Names}}' | grep -qx crewgo; then
   say "已有同名容器，删除重建（数据在 $DATA_DIR，不会丢）"
   docker rm -f crewgo >/dev/null

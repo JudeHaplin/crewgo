@@ -89,23 +89,37 @@ NAS 上的飞牛网关偶尔会闹脾气，云服务器是最省事的路子：�
    ssh root@<你的公网IP>
    ```
 
-4. **跑一条命令**（把仓库里的脚本拉下来执行；网络不通就按下一步手动贴命令）：
+4. **跑一条命令**（用 jsDelivr CDN，`raw.githubusercontent.com` 在国内经常被重置）：
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | bash
+   curl -fsSL https://cdn.jsdelivr.net/gh/JudeHaplin/crewgo@main/deploy/cloud/install.sh | sudo bash
    ```
 
-   脚本干三件事：没 Docker 就装、拉镜像（失败重试 5 次）、起容器并自检。跑完会直接打印访问地址。
+   取不到就换这两个镜像之一：
 
-5. **手动版**（不依赖 raw.githubusercontent.com，任何一步失败就用这个）：
+   ```bash
+   curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | sudo bash
+   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | sudo bash
+   ```
+
+   脚本干四件事：没 Docker 就装、拉镜像（直连失败自动换南大镜像）、建数据目录并给容器用户写权限、起容器并自检。跑完直接打印访问地址。
+
+5. **手动版**（脚本取不到时用这个，任何一步失败也好逐段定位）：
 
    ```bash
    # 装 Docker（Ubuntu/Debian）
-   apt-get update && apt-get install -y docker.io
-   systemctl enable --now docker
+   sudo apt-get update && sudo apt-get install -y docker.io
+   sudo systemctl enable --now docker
 
-   # 拉镜像并启动
-   docker run -d --name crewgo --restart unless-stopped \
+   # 数据目录：容器里应用以 uid 1000 运行，目录必须归它，否则页面能开但保存报错
+   sudo mkdir -p /opt/crewgo/data && sudo chown -R 1000:1000 /opt/crewgo/data
+
+   # 拉镜像（直连 ghcr.io 慢，用南大镜像后打回原名）
+   sudo docker pull ghcr.nju.edu.cn/judehaplin/crewgo:1.0.3
+   sudo docker tag ghcr.nju.edu.cn/judehaplin/crewgo:1.0.3 ghcr.io/judehaplin/crewgo:1.0.3
+
+   # 启动
+   sudo docker run -d --name crewgo --restart unless-stopped \
      -p 8080:8080 -v /opt/crewgo/data:/data \
      -e TZ=Asia/Shanghai -e PORT=8080 -e DIGEST_HOUR=8 \
      ghcr.io/judehaplin/crewgo:1.0.3
