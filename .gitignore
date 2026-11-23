@@ -9,3 +9,4 @@ dist/
 .data2/
 .workbuddy/
 .wbapp_*.genie
+.github-token
