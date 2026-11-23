@@ -92,15 +92,17 @@ NAS 上的飞牛网关偶尔会闹脾气，云服务器是最省事的路子：�
 4. **跑一条命令**（用 jsDelivr CDN，`raw.githubusercontent.com` 在国内经常被重置）：
 
    ```bash
-   curl -fsSL https://cdn.jsdelivr.net/gh/JudeHaplin/crewgo@main/deploy/cloud/install.sh | sudo bash
+   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | sudo bash
    ```
 
-   取不到就换这两个镜像之一：
+   取不到就换这两个（都是实时抓 GitHub，不会拿到旧版）：
 
    ```bash
    curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | sudo bash
-   curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | sudo bash
+   curl -fsSL https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/cloud/install.sh | sudo bash
    ```
+
+   > 注意：`cdn.jsdelivr.net/gh/...@main/...` 这类 CDN 对分支引用有约 12 小时缓存，脚本刚更新时可能仍拿到旧版本，不建议用来部署/升级。
 
    脚本干四件事：没 Docker 就装、拉镜像（直连失败自动换南大镜像）、建数据目录并给容器用户写权限、起容器并自检。跑完直接打印访问地址。
 
@@ -115,14 +117,14 @@ NAS 上的飞牛网关偶尔会闹脾气，云服务器是最省事的路子：�
    sudo mkdir -p /opt/crewgo/data && sudo chown -R 1000:1000 /opt/crewgo/data
 
    # 拉镜像（直连 ghcr.io 慢，用南大镜像后打回原名）
-   sudo docker pull ghcr.nju.edu.cn/judehaplin/crewgo:1.0.3
-   sudo docker tag ghcr.nju.edu.cn/judehaplin/crewgo:1.0.3 ghcr.io/judehaplin/crewgo:1.0.3
+   sudo docker pull ghcr.nju.edu.cn/judehaplin/crewgo:1.0.4
+   sudo docker tag ghcr.nju.edu.cn/judehaplin/crewgo:1.0.4 ghcr.io/judehaplin/crewgo:1.0.4
 
    # 启动
    sudo docker run -d --name crewgo --restart unless-stopped \
      -p 8080:8080 -v /opt/crewgo/data:/data \
      -e TZ=Asia/Shanghai -e PORT=8080 -e DIGEST_HOUR=8 \
-     ghcr.io/judehaplin/crewgo:1.0.3
+     ghcr.io/judehaplin/crewgo:1.0.4
 
    # 自检
    curl -I http://127.0.0.1:8080/api/health

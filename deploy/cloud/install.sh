@@ -28,6 +28,19 @@ say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m提示：\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
 
+# 优先取公网 IP（云厂商元数据最可靠，其次公共探测服务），最后才退回内网地址
+public_ip() {
+  local ip=""
+  ip=$(curl -fsS -m 2 http://100.100.100.200/latest/meta-data/eipv4 2>/dev/null | tr -d ' \r\n' || true)
+  [ -n "$ip" ] || ip=$(curl -fsS -m 3 https://api.ipify.org 2>/dev/null | tr -d ' \r\n' || true)
+  [ -n "$ip" ] || ip=$(curl -fsS -m 3 https://ifconfig.me/ip 2>/dev/null | tr -d ' \r\n' || true)
+  if [ -z "$ip" ]; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+    [ -n "$ip" ] && ip="$ip（内网地址，外网请用云控制台上的公网 IP）"
+  fi
+  printf '%s' "$ip"
+}
+
 [ "$(id -u)" = "0" ] || die "请用 root 运行：sudo bash install.sh"
 
 # ---------- 1. Docker ----------
@@ -140,8 +153,9 @@ for i in $(seq 1 30); do
   if curl -fsS -m 2 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
     echo
     say "部署完成 ✔"
-    IP=$(curl -fsS -m 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
+    IP=$(public_ip)
     echo
+    echo "  版本：       $TAG"
     echo "  浏览器打开： http://${IP:-<服务器公网IP>}:$PORT/"
     echo "  数据目录：   $DATA_DIR（备份就是拷这个目录）"
     echo "  看日志：     docker logs -f crewgo"
