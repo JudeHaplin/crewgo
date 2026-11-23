@@ -113,14 +113,11 @@ GET  /api/health        健康检查（容器 healthcheck 用）
 DATA_DIR=./.data PORT=8080 node --no-warnings server/src/index.js
 ```
 
-跑测试（会启动服务并跑一遍接口 + 前端适配层，共 50 项断言）：
+跑测试（自动为每个测试文件起一个干净实例，共 52 项断言）：
 
 ```bash
-rm -rf .data
-DATA_DIR=./.data PORT=8099 node --no-warnings server/src/index.js &
-sleep 3
-PORT=8099 node --no-warnings server/test/api-smoke.js     # 需要改 BASE 或用默认 8099
-node --no-warnings server/test/client-shim.js
+node server/test/run.js              # 全部
+node server/test/run.js api-smoke    # 只跑一个
 ```
 
 ## 打包与发布

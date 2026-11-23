@@ -58,8 +58,10 @@ if [ -z "$FPK" ]; then
   FPK=$(ls -1t "$ROOT"/*.fpk 2>/dev/null | head -1 || true)
 fi
 if [ -n "$FPK" ]; then
-  cp "$FPK" "$ROOT/dist/"
-  echo "完成：dist/$(basename "$FPK")"
+  # 带上版本号，便于 Release 里区分；fnpack 默认只输出 crewgo.fpk
+  OUT="$ROOT/dist/crewgo-$VERSION.fpk"
+  cp "$FPK" "$OUT"
+  echo "完成：dist/$(basename "$OUT") ($(wc -c < "$OUT" | tr -d ' ') 字节)"
 else
   echo "打包结束，但没找到 .fpk，请检查 fnpack 输出" >&2
   exit 1

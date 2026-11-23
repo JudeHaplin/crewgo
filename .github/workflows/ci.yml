@@ -23,13 +23,7 @@ jobs:
           node --check server/src/jobs.js
 
       - name: 接口与适配层测试
-        run: |
-          rm -rf .data
-          DATA_DIR=./.data PORT=8099 node --no-warnings server/src/index.js &
-          sleep 3
-          node --no-warnings server/test/api-smoke.js
-          node --no-warnings server/test/client-shim.js
-          kill %1
+        run: node --no-warnings server/test/run.js
 
       - name: 构建镜像
         run: docker build -t crewgo:ci .
