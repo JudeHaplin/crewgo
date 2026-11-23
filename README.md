@@ -45,9 +45,14 @@ docker run -d --name crewgo \
 
 首次打开会自动进入**初始化**：填姓名和 PIN，这个账号就是统筹管理员。
 
+> **拉镜像报 `unauthorized` 时**：GHCR 的容器包新建后默认私有，需要在
+> `github.com/users/<owner>/packages/container/crewgo/settings` → 底部 Danger Zone →
+> Change visibility → Public，改成公开后即可匿名拉取。
+> 不想公开也行，先 `docker login ghcr.io`（用个人令牌，勾 `read:packages`）再拉。
+
 ## 安装到飞牛 fnOS（fpk）
 
-1. 到 [Releases](../../releases) 下载 `crewgo-1.0.0.fpk`
+1. 到 [Releases](../../releases) 下载 `crewgo-<版本号>.fpk`
 2. 飞牛应用中心 → 手动安装 → 选择该文件
 3. 装完从桌面图标打开，第一次进入创建管理员
 
