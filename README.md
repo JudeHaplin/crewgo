@@ -170,6 +170,33 @@ tar czf crewgo-data-$(date +%F).tgz -C /opt crewgo/data   # 备份
 
 **公网暴露后的安全建议**：管理员 PIN 别用 `1234`，至少 6 位；端口别用 8080 以外的常见端口无所谓，但一定要放行规则精确到 TCP；SSH 建议改成密钥登录并禁用密码。
 
+## 顺手把飞牛 NAS 也挂到公网（可选）
+
+如果 NAS 只有 IPv6 公网、而你要从没有 IPv6 的网络（公司、部分手机热点）访问它，可以用这台服务器做中转。
+
+原理上这不是「反向代理」而是**反向隧道**：阿里云轻量服务器不支持 IPv6，没法主动连 NAS；但 NAS 能主动向服务器的 IPv4 建立出站连接，隧道建好之后，服务器顺着这条连接把流量送回 NAS。所以两端都不需要 IPv6。
+
+```bash
+curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/JudeHaplin/crewgo/main/deploy/nas/frp-server.sh -o /tmp/frp.sh
+sudo bash /tmp/frp.sh                      # 默认通道 7000，对外 7100，NAS 后台 5666
+sudo env NAS_PORT=5000 bash /tmp/frp.sh    # NAS 后台端口不是 5666 时指定
+```
+
+脚本会装好 `frps` 并注册为 systemd 服务，最后打印**飞牛端要粘贴的 frpc 配置和启动命令**。
+
+跑之前/之后必须做：阿里云控制台 → 防火墙 → 放行 `TCP 7000`（隧道）和 `TCP 7100`（对外）。
+
+日常维护：
+
+```bash
+systemctl status frps
+journalctl -u frps -n 50 --no-pager
+```
+
+**先说清代价**：走隧道时速度受服务器带宽限制（3 Mbps 套餐约 350 KB/s），看文件列表、下载文档没问题，在线看视频不行。手机 4G/5G 通常自带 IPv6，可以继续直连 NAS 拿满速，两条路并存最好。
+
+> 不用 Docker 的原因：`fatedier/frp` 只在 Docker Hub，国内常拉不动，且 ghcr 上没有这个镜像（实测 404）。所以脚本直接装官方二进制。
+
 ## 安装到飞牛 fnOS（fpk）
 
 1. 到 [Releases](../../releases) 下载 `crewgo-<版本号>.fpk`（**请用 1.0.2 或更新版本**）
