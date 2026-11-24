@@ -13,7 +13,7 @@ set -euo pipefail
 PORT="${PORT:-8080}"
 DATA_DIR="${DATA_DIR:-/opt/crewgo/data}"
 # 内置兜底版本；正常情况下从 GitHub 取最新 release，免得每次发版都要改脚本
-FALLBACK_TAG="1.2.2"
+FALLBACK_TAG="1.2.3"
 if [ -z "${VERSION:-}" ] && [ -z "${IMAGE:-}" ]; then
   VERSION=$(curl -fsSL -m 6 https://api.github.com/repos/JudeHaplin/crewgo/releases/latest 2>/dev/null \
     | tr -d ' \n' | sed -n 's/.*"tag_name":"v\{0,1\}\([^"]*\)".*/\1/p' || true)

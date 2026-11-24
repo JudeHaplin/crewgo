@@ -104,6 +104,12 @@ function zip(files) {
 
   const reqs = await api('/api/team/requests', null, admin);
   ok(reqs.status === 200 && reqs.json.data.length === 1, '管理员能看到 1 条申请');
+
+  // 有人申请时，管理员要有站内通知，否则没人会主动去翻「设置 → 团队」
+  const ntf = await db(admin, { table: 'notifications', action: 'select', filters: [{ op: 'eq', col: 'owner_id', val: setup.json.user.id }] });
+  ok(ntf.status === 200 && ntf.json.data.some(n => /入团申请/.test(n.title) && /张工/.test(n.body || '')),
+    '管理员收到「新的入团申请」通知', ntf.json && ntf.json.data && ntf.json.data.map(n => n.title));
+
   const decided = await api('/api/team/requests/decide', { id: reqs.json.data[0].id, approve: true }, admin);
   ok(decided.status === 200 && decided.json.approved, '同意申请');
   const meJoined = await api('/api/auth/me', null, tech);
@@ -112,6 +118,48 @@ function zip(files) {
 
   const reqsAgain = await api('/api/team/requests', null, admin);
   ok(reqsAgain.json.data.length === 0, '申请列表清空');
+
+  console.log('\n[3b] 同名档案合并：老台账里已经有这个人，审批不能报唯一索引错');
+  const same = await db(admin, { table: 'profiles', action: 'insert', values: { name: '周红祥', role: 'tech', phone: '13122146919', color: '#0f9d76' } });
+  ok(same.status === 200, '管理员手工建了同名技术员「周红祥」');
+  const sameId = same.json.data[0].id;
+  const sameAppt = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-05', time_slot: '上午', address: '2栋101', content: '换灯', tech_id: sameId, tech_name: '周红祥' }
+  });
+  ok(sameAppt.status === 200, '给同名技术员派了一单');
+  const before = (await db(admin, { table: 'profiles', action: 'select' })).json.data.length;
+
+  const regDup = await api('/api/auth/register', { name: '周红祥', pin: '6688', phone: '13122146919' });
+  ok(regDup.status === 200, '本人用同样的名字注册新账号');
+  const techDup = regDup.json.token, techDupId = regDup.json.user.id;
+  const joinDup = await api('/api/team/join', { code: teamCode }, techDup);
+  ok(joinDup.status === 200 && joinDup.json.pending, '提交入团申请');
+  const reqsDup = await api('/api/team/requests', null, admin);
+  const targetDup = (reqsDup.json.data || []).find(x => x.profile_id === techDupId);
+  ok(targetDup && targetDup.dup_name === '周红祥', '申请列表里提前提示「已有同名成员」', targetDup);
+  const decDup = await api('/api/team/requests/decide', { id: targetDup && targetDup.id, approve: true }, admin);
+  ok(decDup.status === 200 && decDup.json.approved, '同意不再撞 UNIQUE 约束', decDup.json);
+  ok(decDup.json.merged === '周红祥', '返回合并了哪个同名档案', decDup.json);
+  const membersDup = (await db(admin, { table: 'profiles', action: 'select' })).json.data;
+  ok(membersDup.length === before, '人数没变（占位行被合并掉，不是新增一行）', membersDup.length);
+  ok(!membersDup.some(p => p.id === sameId), '同名占位档案已删除');
+  const movedAppt = (await db(admin, { table: 'appointments', action: 'select', filters: [{ op: 'eq', col: 'id', val: sameAppt.json.data[0].id }] })).json.data[0];
+  ok(movedAppt && movedAppt.tech_id === techDupId, '历史预约转到新账号上', movedAppt && movedAppt.tech_id);
+  ok((await api('/api/auth/me', null, techDup)).json.team.id === teamId, '新账号顺利进团队');
+
+  console.log('\n[3c] 同名的是管理员：不合并，给中文提示');
+  ok((await api('/api/team/members/role', { id: techId, role: 'admin' }, admin)).status === 200, '把张工提成管理员');
+  const regAdm = await api('/api/auth/register', { name: '张工', pin: '1122' });
+  ok(regAdm.status === 200, '同名新账号可以注册');
+  const techAdm = regAdm.json.token, techAdmId = regAdm.json.user.id;
+  await api('/api/team/join', { code: teamCode }, techAdm);
+  const reqsAdm = await api('/api/team/requests', null, admin);
+  const tAdm = (reqsAdm.json.data || []).find(x => x.profile_id === techAdmId);
+  const decAdm = await api('/api/team/requests/decide', { id: tAdm && tAdm.id, approve: true }, admin);
+  ok(decAdm.status === 400 && /同名/.test(decAdm.json.error), '同名管理员时拒绝合并并说明原因', decAdm.json);
+  ok((await api('/api/team/requests/decide', { id: tAdm && tAdm.id, approve: false }, admin)).json.approved === false, '可以改判为拒绝');
+  ok((await api('/api/team/members/role', { id: techId, role: 'member' }, admin)).status === 200, '把张工改回成员（后面的权限用例要它当成员）');
 
   console.log('\n[4] 权限：成员不能管项目，能看到团队数据');
   ok((await db(tech, { table: 'projects', action: 'insert', values: { name: '偷偷加' } })).status === 403, '成员不能建项目');

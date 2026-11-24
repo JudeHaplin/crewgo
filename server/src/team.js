@@ -57,14 +57,83 @@ function createTeam(profile, name) {
   return { team: teamById(teamId), code };
 }
 
+/** 给团队所有管理员（统筹 + 管理员）发站内通知；发失败不影响主流程 */
+function notifyTeamAdmins(teamId, title, body, exceptId) {
+  try {
+    const admins = raw().prepare(
+      "SELECT id FROM profiles WHERE team_id = ? AND active = 1 AND team_role IN ('owner','admin')"
+    ).all(teamId);
+    const ins = raw().prepare('INSERT INTO notifications (team_id, owner_id, title, body) VALUES (?,?,?,?)');
+    for (const a of admins) {
+      if (exceptId && a.id === exceptId) continue;
+      ins.run(teamId, a.id, title, body);
+    }
+  } catch (e) { /* 通知失败不影响入团/审批 */ }
+}
+
+/** 查团队里有没有同名档案（导入台账、老版本手建都很常见） */
+function sameNameInTeam(teamId, name, exceptId) {
+  if (!name) return null;
+  return raw().prepare(
+    'SELECT * FROM profiles WHERE team_id = ? AND id <> ? AND lower(trim(name)) = lower(trim(?))'
+  ).get(teamId, exceptId || '', String(name)) || null;
+}
+
+/**
+ * 把账号挂到团队上。团队里已经有同名档案时合并，避免撞 UNIQUE(team_id, lower(name))：
+ * 占位档案上的历史（预约、休息日、通知、微信绑定）全部搬到新账号，占位行删掉。
+ * 同名的人如果是管理员/统筹则不合并（防止顶着名字把权限接过去），直接报错让统筹先处理。
+ */
+function attachMember(p, teamId) {
+  const dup = sameNameInTeam(teamId, p.name, p.id);
+  if (!dup) {
+    raw().prepare("UPDATE profiles SET team_id = ?, team_role = 'member', active = 1 WHERE id = ?").run(teamId, p.id);
+    return { merged: null };
+  }
+  if (dup.team_role === 'owner' || dup.team_role === 'admin') {
+    throw bad('团队里已经有一位同名的' + (dup.team_role === 'owner' ? '团队统筹' : '管理员') + '「' + dup.name +
+      '」。同意前请让统筹先给那一行改名（设置 → 人员），或让对方用原账号登录。');
+  }
+  raw().prepare('UPDATE appointments SET tech_id = ? WHERE team_id = ? AND tech_id = ?').run(p.id, teamId, dup.id);
+  raw().prepare('UPDATE appointments SET owner_id = ? WHERE team_id = ? AND owner_id = ?').run(p.id, teamId, dup.id);
+  raw().prepare('UPDATE notifications SET owner_id = ? WHERE owner_id = ?').run(p.id, dup.id);
+  raw().prepare('UPDATE email_logs SET owner_id = ? WHERE owner_id = ?').run(p.id, dup.id);
+  // 休息日：同一天两条会撞 (team_id, profile_id, off_date)，新账号已经休的就不搬
+  raw().prepare('DELETE FROM time_off WHERE profile_id = ? AND off_date IN (SELECT off_date FROM time_off WHERE profile_id = ?)')
+    .run(dup.id, p.id);
+  raw().prepare('UPDATE time_off SET profile_id = ? WHERE profile_id = ?').run(p.id, dup.id);
+  // 微信绑定：新账号自己绑过就以新的为准
+  const hasWx = raw().prepare('SELECT 1 AS x FROM wx_accounts WHERE profile_id = ? LIMIT 1').get(p.id);
+  if (hasWx) raw().prepare('DELETE FROM wx_accounts WHERE profile_id = ?').run(dup.id);
+  else raw().prepare('UPDATE wx_accounts SET profile_id = ? WHERE profile_id = ?').run(p.id, dup.id);
+  raw().prepare('DELETE FROM team_requests WHERE profile_id = ?').run(dup.id);
+  // 补齐新账号缺的资料（手机号、邮箱、颜色），业务角色沿用占位档案的
+  raw().prepare(
+    'UPDATE profiles SET phone = COALESCE(NULLIF(phone, \'\'), ?), email = COALESCE(NULLIF(email, \'\'), ?), ' +
+    'color = COALESCE(color, ?), role = ? WHERE id = ?'
+  ).run(dup.phone || null, dup.email || null, dup.color || null, dup.role || p.role || 'tech', p.id);
+  raw().prepare('DELETE FROM profiles WHERE id = ?').run(dup.id);
+  raw().prepare("UPDATE profiles SET team_id = ?, team_role = 'member', active = 1 WHERE id = ?").run(teamId, p.id);
+  return { merged: dup.name };
+}
+
 /** 凭团队码申请加入。团队开了「免审批」就直接进，否则生成待审申请 */
 function joinByCode(profile, code, message) {
   if (profile.team_id) throw bad('你已经在一个团队里了');
   const team = teamByCode(code);
   if (!team) throw bad('团队码不对，请向团队统筹确认（3 位大写字母 + 6 位数字）');
   if (team.allow_direct === 1) {
-    raw().prepare("UPDATE profiles SET team_id = ?, team_role = 'member' WHERE id = ?").run(team.id, profile.id);
-    return { joined: true, team: publicTeam(team) };
+    raw().exec('BEGIN');
+    let merged = null;
+    try {
+      merged = attachMember(profile, team.id).merged;
+      raw().exec('COMMIT');
+    } catch (e) {
+      raw().exec('ROLLBACK');
+      throw e;
+    }
+    notifyTeamAdmins(team.id, '有新成员加入', profile.name + ' 凭团队码加入了团队。', profile.id);
+    return { joined: true, merged, team: publicTeam(team) };
   }
   const exist = raw().prepare('SELECT * FROM team_requests WHERE team_id = ? AND profile_id = ?').get(team.id, profile.id);
   if (exist && exist.status === 'pending') return { joined: false, pending: true, team: publicTeam(team) };
@@ -75,6 +144,9 @@ function joinByCode(profile, code, message) {
     raw().prepare('INSERT INTO team_requests (team_id, profile_id, message) VALUES (?,?,?)')
       .run(team.id, profile.id, String(message || '').slice(0, 200) || null);
   }
+  // 有申请就得让管理员知道，否则没人会主动去翻「设置 → 团队」
+  notifyTeamAdmins(team.id, '新的入团申请',
+    profile.name + '（' + (profile.phone || '未填手机号') + '）申请加入团队，去「设置 → 团队」同意或拒绝。');
   return { joined: false, pending: true, team: publicTeam(team) };
 }
 
@@ -98,7 +170,10 @@ function listRequests(actor) {
     "CASE WHEN p.team_id IS NULL THEN 0 ELSE 1 END AS already_in_team " +
     "FROM team_requests r JOIN profiles p ON p.id = r.profile_id " +
     "WHERE r.team_id = ? AND r.status = 'pending' ORDER BY r.id ASC"
-  ).all(actor.teamId);
+  ).all(actor.teamId).map(r => Object.assign({}, r, {
+    // 团队里已有同名档案：同意时会合并到那一行，先提示管理员
+    dup_name: (sameNameInTeam(actor.teamId, r.name, r.profile_id) || {}).name || null
+  }));
 }
 
 function decide(actor, requestId, approve) {
@@ -117,8 +192,9 @@ function decide(actor, requestId, approve) {
   if (p.team_id) throw bad('这个人已经加入其他团队了');
 
   raw().exec('BEGIN');
+  let merged = null;
   try {
-    raw().prepare("UPDATE profiles SET team_id = ?, team_role = 'member', active = 1 WHERE id = ?").run(actor.teamId, p.id);
+    merged = attachMember(p, actor.teamId).merged;
     raw().prepare("UPDATE team_requests SET status = 'approved', decided_at = datetime('now','localtime'), decided_by = ? WHERE id = ?")
       .run(actor.id, r.id);
     raw().prepare("UPDATE team_requests SET status = 'cancelled', decided_at = datetime('now','localtime') WHERE profile_id = ? AND status = 'pending'")
@@ -132,7 +208,7 @@ function decide(actor, requestId, approve) {
     raw().prepare('INSERT INTO notifications (team_id, owner_id, title, body) VALUES (?,?,?,?)')
       .run(actor.teamId, p.id, '已加入团队', '你的入团申请通过了，现在可以看到团队的排期和预约单。');
   } catch (e) { /* 通知失败不影响审批 */ }
-  return { ok: true, approved: true };
+  return { ok: true, approved: true, merged };
 }
 
 function members(actor) {

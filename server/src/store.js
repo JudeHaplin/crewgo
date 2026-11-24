@@ -388,6 +388,30 @@ function ensureTeamSettings(teamId) {
   return db.prepare('SELECT * FROM settings WHERE team_id = ?').get(teamId);
 }
 
+/**
+ * 补发入团申请的站内通知。
+ * 1.2.2 及更早版本只把申请写进 team_requests，管理员什么都收不到；
+ * 升级后启动一次，把还挂着的待审申请补一条通知，免得没人知道有人在外面等。
+ */
+function backfillTeamNotices() {
+  try {
+    const pend = db.prepare(
+      "SELECT r.team_id, p.name, p.phone FROM team_requests r JOIN profiles p ON p.id = r.profile_id WHERE r.status = 'pending'"
+    ).all();
+    if (!pend.length) return;
+    const adminsOf = db.prepare("SELECT id FROM profiles WHERE team_id = ? AND active = 1 AND team_role IN ('owner','admin')");
+    const has = db.prepare("SELECT 1 AS x FROM notifications WHERE owner_id = ? AND title = '新的入团申请' AND instr(IFNULL(body,''), ?) > 0 LIMIT 1");
+    const ins = db.prepare('INSERT INTO notifications (team_id, owner_id, title, body) VALUES (?,?,?,?)');
+    for (const r of pend) {
+      for (const a of adminsOf.all(r.team_id)) {
+        if (has.get(a.id, r.name)) continue;
+        ins.run(r.team_id, a.id, '新的入团申请',
+          r.name + '（' + (r.phone || '未填手机号') + '）申请加入团队，去「设置 → 团队」同意或拒绝。');
+      }
+    }
+  } catch (e) { /* 补通知失败不影响启动 */ }
+}
+
 function open() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   db = new DatabaseSync(DB_FILE);
@@ -399,6 +423,7 @@ function open() {
   migrate();
   db.exec(INDEXES);
   ensureDefaultTeam();
+  backfillTeamNotices();
   return db;
 }
 
@@ -572,14 +597,42 @@ function assertCan(actor, table, action, payload, filters) {
 
 /** 把前端传的过滤条件改成「当前团队」范围：前端传别的团队也没用 */
 function scopeFilters(actor, table, filters) {
-  if (!SCOPED.includes(table)) return filters || [];
-  const out = (filters || []).filter(f => f && f.col !== 'team_id');
-  out.push({ op: 'eq', col: 'team_id', val: actor.teamId });
+  let out = filters || [];
+  if (SCOPED.includes(table)) {
+    out = out.filter(f => f && f.col !== 'team_id');
+    out.push({ op: 'eq', col: 'team_id', val: actor.teamId });
+  }
+  // 通知是私人的：只给自己看，别把别人的派单提醒、入团申请也摆出来
+  if (table === 'notifications') {
+    out = out.filter(f => f && f.col !== 'owner_id');
+    out.push({ op: 'eq', col: 'owner_id', val: actor.id });
+  }
   return out;
 }
 
 /* ---------- 执行 ---------- */
+/** 唯一索引撞了的时候，别把 SQLite 的英文原文丢给用户 */
+function friendlyError(e, q) {
+  const msg = String((e && e.message) || e || '');
+  if (msg.indexOf('profiles_team_name_key') >= 0) {
+    const nm = (q && q.values && q.values.name) || '这个名字';
+    return bad('团队里已经有叫「' + nm + '」的人了，换个名字，或先把原来那条改掉');
+  }
+  if (msg.indexOf('time_off_key') >= 0) return bad('这位师傅这一天已经排过休息了');
+  if (msg.indexOf('team_req_key') >= 0) return bad('这个人已经提交过入团申请了');
+  if (msg.indexOf('wx_app_openid_key') >= 0) return bad('这个微信号已经绑定过别的账号了');
+  return e;
+}
+
 function run(actor, q) {
+  try {
+    return runInner(actor, q);
+  } catch (e) {
+    throw friendlyError(e, q);
+  }
+}
+
+function runInner(actor, q) {
   const h = handle();
   const table = String(q.table || '');
   if (!TABLES[table]) throw bad('未知数据表：' + table);

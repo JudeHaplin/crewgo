@@ -1077,7 +1077,9 @@
         '<span class="avatar" style="background:#8b93a3;width:30px;height:30px;font-size:12px">' + esc(String(r.name || '?').slice(0, 1)) + '</span>' +
         '<div class="grow"><div class="nm">' + esc(r.name) +
           ' <span class="hint">' + esc(r.phone || '未填手机号') + '</span></div>' +
-          '<div class="sub">' + esc(r.message || '申请加入') + ' · ' + esc(String(r.created_at || '').slice(0, 16)) + '</div></div>' +
+          '<div class="sub">' + esc(r.message || '申请加入') + ' · ' + esc(String(r.created_at || '').slice(0, 16)) + '</div>' +
+          (r.dup_name ? '<div class="hint">团队里已有同名成员「' + esc(r.dup_name) + '」，同意后会合并到那一行的历史记录</div>' : '') +
+        '</div>' +
         '<button class="btn btn-sm btn-primary" data-act="req-approve" data-id="' + r.id + '">同意</button>' +
         '<button class="btn btn-sm" data-act="req-reject" data-id="' + r.id + '">拒绝</button>' +
       '</div>').join('');
@@ -2368,7 +2370,9 @@
     try {
       const r = await teamPost('/api/team/requests/decide', { id: Number(id), approve: !!approve });
       await loadAll(); render();
-      toast(r.approved ? '已同意，对方刷新就能进来' : '已拒绝');
+      if (!r.approved) toast('已拒绝');
+      else if (r.merged) toast('已同意，并合并到同名成员「' + r.merged + '」的历史记录', 3600);
+      else toast('已同意，对方刷新就能进来');
     } catch (e) { toast('操作失败：' + e.message, 4200); }
   }
 
