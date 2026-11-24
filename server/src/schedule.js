@@ -99,7 +99,22 @@ function offOnDate(teamId, date) {
 }
 
 /** 批量排休：把区间里每一天都写进去（已存在就跳过；同一天先排上午再排下午会合并成全天） */
-function addOff(teamId, profileId, from, to, reason, part) {
+/** 同一天的起止时段合起来算哪天休：上午→下午 = 全天，上午→上午 = 上午 */
+function mergePart(fromPart, toPart) {
+  const x = normPart(fromPart);
+  const y = normPart(toPart);
+  if (x === '全天' || y === '全天') return '全天';
+  if (x === y) return x;
+  return '全天';
+}
+
+/**
+ * 排休：维修工只排单日（part），管理员可以排一段。
+ *   part     起始日休哪个时段（下午 = 那天上午还上班）
+ *   endPart  结束日休到哪个时段（上午 = 那天下午就上班了）
+ * 中间的日子一律全天。
+ */
+function addOff(teamId, profileId, from, to, reason, part, endPart) {
   const start = String(from || '').slice(0, 10);
   const end = String(to || from || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) throw store.bad('开始日期格式不对');
@@ -110,17 +125,28 @@ function addOff(teamId, profileId, from, to, reason, part) {
   const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
   if (days > 180) throw store.bad('一次最多排 180 天');
 
-  const want = normPart(part);
+  const fromPart = normPart(part);
+  const toPart = normPart(endPart === undefined || endPart === null || endPart === '' ? part : endPart);
+  if (days === 1 && fromPart === '下午' && toPart === '上午') {
+    throw store.bad('同一天里结束时段不能早于开始时段');
+  }
+
   const find = raw().prepare('SELECT id, part FROM time_off WHERE team_id = ? AND profile_id = ? AND off_date = ?');
   const widen = raw().prepare("UPDATE time_off SET part = '全天' WHERE id = ?");
   const stmt = raw().prepare('INSERT OR IGNORE INTO time_off (team_id, profile_id, off_date, part, reason) VALUES (?,?,?,?,?)');
   let added = 0, merged = 0;
+  const note = String(reason || '').slice(0, 60) || null;
   const d = new Date(start + 'T00:00:00');
   for (let i = 0; i < days; i++) {
     const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    let want;
+    if (days === 1) want = mergePart(fromPart, toPart);
+    else if (i === 0) want = fromPart;
+    else if (i === days - 1) want = toPart;
+    else want = '全天';
     const hit = find.get(teamId, member.id, key);
     if (!hit) {
-      const info = stmt.run(teamId, member.id, key, want, String(reason || '').slice(0, 60) || null);
+      const info = stmt.run(teamId, member.id, key, want, note);
       if (info.changes) added++;
     } else if (normPart(hit.part) !== want && normPart(hit.part) !== '全天') {
       // 上午 + 下午 = 全天；已有半天又排全天也是全天
@@ -129,7 +155,7 @@ function addOff(teamId, profileId, from, to, reason, part) {
     }
     d.setDate(d.getDate() + 1);
   }
-  return { added, merged, days, part: want, name: member.name };
+  return { added, merged, days, part: fromPart, end_part: toPart, name: member.name };
 }
 
 module.exports = { slotOverlap, check, listOff, offOnDate, addOff, resolveTech, PARTS, normPart, offCovers };

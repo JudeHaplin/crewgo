@@ -440,6 +440,19 @@ function click(listeners, act, attrs) {
   ok(offH.indexOf('id="off-part"') >= 0 && offH.indexOf('上午') >= 0 && offH.indexOf('下午') >= 0,
     '排休可以按半天（上午 / 下午）设');
   ok(offH.indexOf('张工') >= 0, '弹窗默认是给自己排休');
+  ok(offH.indexOf('id="off-date"') >= 0, '维修人员只能一天一天排（只有单个日期）');
+  ok(offH.indexOf('id="off-from"') < 0 && offH.indexOf('id="off-to"') < 0, '维修人员没有「从 / 到」区间');
+
+  console.log('\n[14] 管理员排休：按时间段（从某天某时段到某天某时段）');
+  click(full.listeners, 'nav', { nav: 'board' });
+  ok(full.nodes['#page'].innerHTML.indexOf('新建预约') >= 0, '管理员仍然能新建预约');
+  click(full.listeners, 'time-off', { id: 'p_9' });
+  const rngH = full.nodes['#modal-root'].innerHTML;
+  ok(rngH.indexOf('id="off-from"') >= 0 && rngH.indexOf('id="off-to"') >= 0, '管理员排休是按区间设的');
+  ok(rngH.indexOf('id="off-part-from"') >= 0 && rngH.indexOf('id="off-part-to"') >= 0,
+    '起始、结束各自能选时段');
+  ok(rngH.indexOf('id="off-date"') < 0, '管理员的弹窗里没有单日日期框');
+  ok(rngH.indexOf('休息日里不会被排进预约单') >= 0, '提示文案一致');
 
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);

@@ -246,6 +246,43 @@ function zip(files) {
   });
   ok(fullBlocked.status === 409 && fullBlocked.json.off.part === '全天', '合并成全天以后下午也拦', fullBlocked.json);
 
+  console.log('\n[6c] 区间排休：从某天下午到某天上午');
+  const span = await api('/api/schedule/time-off',
+    { profile_id: techId, from: '2026-12-16', to: '2026-12-18', part: '下午', end_part: '上午' }, admin);
+  ok(span.status === 200 && span.json.added === 3 && span.json.days === 3, '排了 12-16 到 12-18 三天', span.json);
+  const spanList = await api('/api/schedule/time-off?from=2026-12-16&to=2026-12-18', null, admin);
+  const partMap = {};
+  (spanList.json.data || []).forEach(r => { if (r.profile_id === techId) partMap[r.off_date] = r.part; });
+  ok(partMap['2026-12-16'] === '下午' && partMap['2026-12-17'] === '全天' && partMap['2026-12-18'] === '上午',
+    '首日下午 / 中间全天 / 末日 上午', partMap);
+
+  const day1am = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-16', time_slot: '上午', address: '10栋', content: '修灯', tech_id: techId, tech_name: '张工' }
+  });
+  ok(day1am.status === 200, '起始日上午照常能排（那天从下午开始休）');
+  const day1pm = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-16', time_slot: '下午', address: '10栋', content: '修灯', tech_id: techId, tech_name: '张工' }
+  });
+  ok(day1pm.status === 409 && day1pm.json.off.part === '下午', '起始日下午被拦', day1pm.json);
+  const day3pm = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-18', time_slot: '下午', address: '11栋', content: '修灯', tech_id: techId, tech_name: '张工' }
+  });
+  ok(day3pm.status === 200, '结束日下午照常能排（那天只休到上午）');
+  const day3am = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-18', time_slot: '上午', address: '11栋', content: '修灯', tech_id: techId, tech_name: '张工' }
+  });
+  ok(day3am.status === 409 && day3am.json.off.part === '上午', '结束日上午被拦', day3am.json);
+  const sameBad = await api('/api/schedule/time-off',
+    { profile_id: techId, from: '2026-12-19', to: '2026-12-19', part: '下午', end_part: '上午' }, admin);
+  ok(sameBad.status === 400, '同一天「下午到上午」被拒', sameBad.json);
+  const revBad = await api('/api/schedule/time-off',
+    { profile_id: techId, from: '2026-12-20', to: '2026-12-19', part: '上午', end_part: '上午' }, admin);
+  ok(revBad.status === 400, '结束日期早于开始日期被拒', revBad.json);
+
   console.log('\n[7] 手机号位数');
   const badPhone = await api('/api/auth/profile', { name: '张工', phone: '1380000' }, tech);
   ok(badPhone.status === 400, '7 位手机号被拒绝');

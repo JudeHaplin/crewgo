@@ -2979,29 +2979,49 @@
   }
 
   /* ---------- 休息日 ---------- */
-  /* 排休：可以整天，也可以只排上午 / 下午（半天） */
+  const offPartSelect = (id, val) => '<select class="select" id="' + id + '">' +
+    ['全天', '上午', '下午'].map(x =>
+      '<option' + (x === (val || '全天') ? ' selected' : '') + '>' + x + '</option>').join('') +
+    '</select>';
+
+  /* 排休：维修人员只能一天一天排（当天选全天 / 上午 / 下午）；
+     管理员按区间排（从某天上午/下午 到 某天上午/下午） */
   function openTimeOffModal(profileId, day) {
     const p = profileById(profileId) || state.profile;
     const t = day || todayStr();
     const list = upcomingOff(p.id);
+    const admin = isAdmin();
     const partLabel = o => (o.part && o.part !== '全天' ? ' ' + o.part : '');
     const rows = list.map(o =>
       '<div class="list-row">' +
         '<div class="grow"><div class="nm">' + esc(o.off_date) + esc(partLabel(o)) + (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div></div>' +
         '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' +
       '</div>').join('');
-    openModal(modalShell('设置休息 · ' + p.name,
+
+    const single =
+      '<div class="form-row">' +
+        '<div class="field"><label>日期</label><input class="input" type="date" id="off-date" value="' + esc(t) + '"></div>' +
+        '<div class="field"><label>时段</label>' + offPartSelect('off-part', '全天') + '</div>' +
+      '</div>';
+
+    const range =
       '<div class="form-row">' +
         '<div class="field"><label>从</label><input class="input" type="date" id="off-from" value="' + esc(t) + '"></div>' +
-        '<div class="field"><label>到</label><input class="input" type="date" id="off-to" value="' + esc(t) + '"></div>' +
+        '<div class="field"><label>起始时段</label>' + offPartSelect('off-part-from', '全天') + '</div>' +
       '</div>' +
       '<div class="form-row">' +
-        '<div class="field"><label>时段</label><select class="select" id="off-part">' +
-          ['全天', '上午', '下午'].map(x => '<option' + (x === '全天' ? ' selected' : '') + '>' + x + '</option>').join('') +
-        '</select></div>' +
-        '<div class="field"><label>原因（选填）</label><input class="input" id="off-reason" maxlength="30" placeholder="如：调休 / 病假 / 年假"></div>' +
-      '</div>' +
-      '<p class="hint" style="margin:-4px 0 12px">休息日里不会被排进预约单，日历上会标出来。选「上午 / 下午」只空出半天，另一半天照常可以排单。</p>' +
+        '<div class="field"><label>到</label><input class="input" type="date" id="off-to" value="' + esc(t) + '"></div>' +
+        '<div class="field"><label>结束时段</label>' + offPartSelect('off-part-to', '全天') + '</div>' +
+      '</div>';
+
+    const tip = admin
+      ? '休息日里不会被排进预约单，日历上会标出来。可以排一段：起始日选「下午」那天上午还照常上班，结束日选「上午」那天下午就回来上班。'
+      : '休息日里不会被排进预约单，日历上会标出来。一天一天排，选「上午 / 下午」只空出半天，另一半天照常可以排单。';
+
+    openModal(modalShell('设置休息 · ' + p.name,
+      (admin ? range : single) +
+      '<div class="field"><label>原因（选填）</label><input class="input" id="off-reason" maxlength="30" placeholder="如：调休 / 病假 / 年假"></div>' +
+      '<p class="hint" style="margin:-4px 0 12px">' + tip + '</p>' +
       (rows ? '<div class="group-title">已排的休息日<span class="count">' + list.length + ' 天</span></div>' + rows : ''),
       '<button class="btn" data-act="close-modal">关闭</button>' +
       '<button class="btn btn-primary" data-act="save-time-off" data-id="' + esc(p.id) + '">保存</button>'
@@ -3009,19 +3029,36 @@
   }
 
   async function saveTimeOff(profileId) {
-    const from = ($('#off-from') || {}).value;
-    const to = ($('#off-to') || {}).value || from;
     const reason = ($('#off-reason') || {}).value || '';
-    const part = ($('#off-part') || {}).value || '全天';
-    if (!from) { toast('请选择开始日期'); return; }
+    let payload;
+    if (isAdmin()) {
+      // 管理员：从某天的某个时段，到某天的某个时段
+      const from = ($('#off-from') || {}).value;
+      const to = ($('#off-to') || {}).value || from;
+      const part = ($('#off-part-from') || {}).value || '全天';
+      const endPart = ($('#off-part-to') || {}).value || part;
+      if (!from) { toast('请选择开始日期'); return; }
+      if (to < from) { toast('结束日期不能早于开始日期'); return; }
+      if (from === to && part === '下午' && endPart === '上午') { toast('同一天里结束时段不能早于开始时段'); return; }
+      payload = { profile_id: profileId, from, to, reason, part, end_part: endPart };
+    } else {
+      // 维修人员：一次只排一天
+      const d = ($('#off-date') || {}).value;
+      const part = ($('#off-part') || {}).value || '全天';
+      if (!d) { toast('请选择日期'); return; }
+      payload = { profile_id: profileId, from: d, to: d, reason, part, end_part: part };
+    }
     try {
-      const r = await teamPost('/api/schedule/time-off', { profile_id: profileId, from, to, reason, part });
+      const r = await teamPost('/api/schedule/time-off', payload);
       closeModal();
       await loadAll(); render();
-      const tag = part === '全天' ? '' : '（' + part + '）';
-      if (r.added) toast('已排休 ' + r.added + ' 天' + tag + (r.added < r.days ? '（其余已经排过）' : ''));
-      else if (r.merged) toast('已改成全天休息（原本只排了半天）');
-      else toast('这几天本来就排了休息');
+      if (!r.added && !r.merged) { toast('这几天本来就排了休息'); return; }
+      if (payload.from === payload.to) {
+        toast((r.added ? '已排休 ' : '已改成全天 ') + dayLabel(payload.from) + (r.added && r.part !== '全天' ? ' ' + r.part : ''));
+      } else {
+        toast('已排休 ' + r.days + ' 天：' + dayLabel(payload.from) + ' ' + r.part + ' → ' + dayLabel(payload.to) + ' ' + r.end_part +
+          (r.added < r.days ? '（其余已经排过）' : ''), 4600);
+      }
     } catch (e) { toast('排休失败：' + e.message, 4200); }
   }
 
