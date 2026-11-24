@@ -3,7 +3,7 @@
 > **AI 项目声明**
 > 本项目的全部代码、页面、部署脚本与文档由 **AI 编程助手（WorkBuddy）生成**，人类负责提出需求、验收与试用反馈。因此：
 > - 代码走的是「够用、简单、单人可维护」的路线，没做过度抽象，也没有高并发设计（团队隔离是 1.2.0 后加的，靠服务端强制注入 `team_id` 实现，够用但谈不上通用多租户方案）；
-> - 业务逻辑（权限、团队隔离、时间冲突、通知去重、导入导出）有 **188 项自动化测试**覆盖，但**没有经过长期生产环境检验**；
+> - 业务逻辑（权限、团队隔离、时间冲突、通知去重、导入导出）有 **219 项自动化测试**覆盖，但**没有经过长期生产环境检验**；
 > - 建议先在队内小范围试用一到两周，确认排期口径、通知对象都符合你们的习惯，再全面推开。
 > 发现问题欢迎提 Issue，我（和 AI）会继续改。
 
@@ -56,7 +56,7 @@ docker run -d --name crewgo \
 
 首次打开会自动进入**初始化**：填姓名和 PIN，再给团队起个名，这个账号就是**团队统筹管理员**（最高权限），系统同时会生成团队码。
 
-> **从旧版本升级不会丢数据**：启动时自动建一个默认团队（名字是「<你的姓名>的团队」，沿用你现在的全部数据），原来那个人是统筹管理员、其余人是管理员，所有人原 PIN 照旧能登。团队名可以在「设置 → 团队」里改，团队码也在那里。老的 `settings` 表结构会自动重建（`id=1` 的单行改成每团队一行），全程不需要手工动数据库——但**升级前建议先导出一次备份**。
+> **从旧版本升级不会丢数据**：启动时自动建一个默认团队（名字是「<你的姓名>的团队」，沿用你现在的全部项目、人员、预约和通知设置），原来那个管理员是团队统筹，**其它人员按原身份分成管理员/成员**（1.1.0 里的普通维修工升级后仍是成员，不会凭空拿到管理权限），所有人原 PIN 照旧能登。团队名可以在「设置 → 团队」里改，团队码也在那里。老的 `settings` 表结构会自动重建（`id=1` 的单行改成每团队一行），全程不需要手工动数据库——但**升级前建议先导出一次备份**。
 
 > **拉镜像报 `unauthorized` 时**：GHCR 的容器包新建后默认私有，需要在
 > `github.com/users/<owner>/packages/container/crewgo/settings` → 底部 Danger Zone →
@@ -173,6 +173,24 @@ docker restart crewgo                    # 重启
 docker rm -f crewgo && bash install.sh   # 升级到新版本（数据在 /opt/crewgo/data 不动）
 tar czf crewgo-data-$(date +%F).tgz -C /opt crewgo/data   # 备份
 ```
+
+**升级前顺手备份**（尤其跨大版本，比如 1.0.x / 1.1.0 → 1.2.x，会自动改表结构）：
+
+```bash
+tar czf ~/crewgo-data-$(date +%F).tgz -C /opt crewgo/data
+```
+
+**升级后起不来怎么回退**：数据永远在 `/opt/crewgo/data`，容器删了也不会动，退回上一个镜像就行。
+
+```bash
+docker images | grep crewgo              # 看本机还留着哪些版本
+docker rm -f crewgo
+docker run -d --name crewgo --restart unless-stopped -p 8080:8080 \
+  -v /opt/crewgo/data:/data -e TZ=Asia/Shanghai -e PORT=8080 \
+  ghcr.io/judehaplin/crewgo:1.1.0
+```
+
+回退前先 `docker logs --tail 30 crewgo` 看一眼报错，把最后几行发出来更快定位。
 
 **公网暴露后的安全建议**：管理员 PIN 别用 `1234`，至少 6 位；**团队码当成口令对待**——只在内部群发，别贴在公开页面，怀疑外泄就「设置 → 团队 → 重置团队码」；**别打开「允许直接加入」**，让每个新人都走审批；端口随意但防火墙规则要精确到 TCP；SSH 建议改成密钥登录并禁用密码。
 
@@ -392,14 +410,14 @@ POST /api/auth/wechat/ticket   用 ticket 换正式会话
 POST /api/auth/wechat/unbind   解除微信绑定
 POST /api/team/create|join|cancel          建团队 / 凭团队码申请 / 撤回申请
 GET  /api/team/requests                    待审批列表（管理员）
-POST /api/team/requests-decide             同意 / 拒绝
+POST /api/team/requests/decide              同意 / 拒绝
 GET  /api/team/members                     成员列表
-POST /api/team/members-role|members-remove 任免管理员 / 移除成员
-POST /api/team/code-reset|allow-direct|rename|owner|leave|dissolve  团队管理
+POST /api/team/members/role|members/remove  任免管理员 / 移除成员
+POST /api/team/code/reset|allow-direct|rename|owner|leave|dissolve  团队管理
 GET  /api/settings/wechat    读微信配置（不返回 Secret）
 POST /api/settings/wechat    保存微信配置
 POST /api/db                 统一的数据读写（表名白名单 + 团队过滤 + 权限校验 + 冲突检测）
-GET  /api/schedule/check     查某人某天某时段是否冲突
+POST /api/schedule/check     查某人某天某时段是否冲突
 GET  /api/schedule/time-off  休息日列表
 POST /api/schedule/time-off  加休息日（支持区间）
 POST /api/schedule/time-off/remove  取消休息日
@@ -416,7 +434,7 @@ GET  /api/health             健康检查（容器 healthcheck 用）
 DATA_DIR=./.data PORT=8080 node --no-warnings server/src/index.js
 ```
 
-跑测试（自动为每个测试文件起一个干净实例，共 188 项断言）：
+跑测试（自动为每个测试文件起一个干净实例，共 219 项断言）：
 
 ```bash
 node server/test/run.js              # 全部

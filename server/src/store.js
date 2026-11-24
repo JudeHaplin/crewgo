@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `;
 
+/* 只建表：老库升级时，索引要等 migrate() 补完列才建，否则 profiles(team_id) 这类索引会直接报“no such column” */
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS teams (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,8 +64,6 @@ CREATE TABLE IF NOT EXISTS team_requests (
   decided_at TEXT,
   decided_by TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS team_req_key ON team_requests (team_id, profile_id);
-CREATE INDEX IF NOT EXISTS team_req_status_idx ON team_requests (status);
 
 CREATE TABLE IF NOT EXISTS wx_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,9 +75,6 @@ CREATE TABLE IF NOT EXISTS wx_accounts (
   avatar TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS wx_app_openid_key ON wx_accounts (app, openid);
-CREATE INDEX IF NOT EXISTS wx_union_idx ON wx_accounts (unionid);
-CREATE INDEX IF NOT EXISTS wx_profile_idx ON wx_accounts (profile_id);
 
 CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY,
@@ -98,10 +94,6 @@ CREATE TABLE IF NOT EXISTS profiles (
   avatar TEXT,
   last_login_at TEXT
 );
-DROP INDEX IF EXISTS profiles_name_key;
-CREATE UNIQUE INDEX IF NOT EXISTS profiles_team_name_key ON profiles (team_id, lower(name));
-CREATE INDEX IF NOT EXISTS profiles_user_idx ON profiles (user_id);
-CREATE INDEX IF NOT EXISTS profiles_team_idx ON profiles (team_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,7 +105,6 @@ CREATE TABLE IF NOT EXISTS projects (
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id);
 
 CREATE TABLE IF NOT EXISTS appointments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,8 +130,6 @@ CREATE TABLE IF NOT EXISTS appointments (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
   updated_at TEXT
 );
-CREATE INDEX IF NOT EXISTS appt_date_idx ON appointments (visit_date);
-CREATE INDEX IF NOT EXISTS appt_team_idx ON appointments (team_id, visit_date);
 
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,8 +141,6 @@ CREATE TABLE IF NOT EXISTS notifications (
   read_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE INDEX IF NOT EXISTS notif_owner_idx ON notifications (owner_id);
-CREATE INDEX IF NOT EXISTS notif_team_idx ON notifications (team_id);
 
 CREATE TABLE IF NOT EXISTS email_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,7 +153,6 @@ CREATE TABLE IF NOT EXISTS email_logs (
   detail TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-CREATE INDEX IF NOT EXISTS email_logs_team_idx ON email_logs (team_id);
 
 CREATE TABLE IF NOT EXISTS time_off (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,6 +162,26 @@ CREATE TABLE IF NOT EXISTS time_off (
   reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+`;
+
+
+
+const INDEXES = `
+CREATE UNIQUE INDEX IF NOT EXISTS team_req_key ON team_requests (team_id, profile_id);
+CREATE INDEX IF NOT EXISTS team_req_status_idx ON team_requests (status);
+CREATE UNIQUE INDEX IF NOT EXISTS wx_app_openid_key ON wx_accounts (app, openid);
+CREATE INDEX IF NOT EXISTS wx_union_idx ON wx_accounts (unionid);
+CREATE INDEX IF NOT EXISTS wx_profile_idx ON wx_accounts (profile_id);
+DROP INDEX IF EXISTS profiles_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_team_name_key ON profiles (team_id, lower(name));
+CREATE INDEX IF NOT EXISTS profiles_user_idx ON profiles (user_id);
+CREATE INDEX IF NOT EXISTS profiles_team_idx ON profiles (team_id);
+CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id);
+CREATE INDEX IF NOT EXISTS appt_date_idx ON appointments (visit_date);
+CREATE INDEX IF NOT EXISTS appt_team_idx ON appointments (team_id, visit_date);
+CREATE INDEX IF NOT EXISTS notif_owner_idx ON notifications (owner_id);
+CREATE INDEX IF NOT EXISTS notif_team_idx ON notifications (team_id);
+CREATE INDEX IF NOT EXISTS email_logs_team_idx ON email_logs (team_id);
 CREATE UNIQUE INDEX IF NOT EXISTS time_off_key ON time_off (team_id, profile_id, off_date);
 CREATE INDEX IF NOT EXISTS time_off_date_idx ON time_off (team_id, off_date);
 `;
@@ -346,7 +352,8 @@ function ensureDefaultTeam() {
 
   db.exec('BEGIN');
   try {
-    db.prepare("UPDATE profiles SET team_id = ?, team_role = CASE WHEN id = ? THEN 'owner' ELSE 'admin' END WHERE team_id IS NULL")
+    // 老库升级时别把大家都提成管理员：只有原来 role=admin 的才是管理员，其余是成员
+    db.prepare("UPDATE profiles SET team_id = ?, team_role = CASE WHEN id = ? THEN 'owner' WHEN role = 'admin' THEN 'admin' ELSE 'member' END WHERE team_id IS NULL")
       .run(teamId, owner.id);
     for (const t of ['projects', 'appointments', 'notifications', 'email_logs']) {
       if (t === 'projects' || t === 'appointments') {
@@ -386,8 +393,11 @@ function open() {
   db = new DatabaseSync(DB_FILE);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA foreign_keys = OFF');
+  // 顺序不能换：老库的表已经存在，CREATE TABLE IF NOT EXISTS 不会补列，
+  // 所以必须先建表 → migrate() 补 team_id 等新列 → 最后才建索引。
   db.exec(SCHEMA);
   migrate();
+  db.exec(INDEXES);
   ensureDefaultTeam();
   return db;
 }

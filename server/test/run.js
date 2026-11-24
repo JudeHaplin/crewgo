@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '../..');
-const TESTS = ['api-smoke', 'team-flow', 'render-smoke', 'client-shim', 'smtp-mail'];
+const TESTS = ['api-smoke', 'legacy-upgrade', 'team-flow', 'render-smoke', 'client-shim', 'smtp-mail'];
 const PORT_BASE = Number(process.env.TEST_PORT_BASE || 8300);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -46,6 +46,19 @@ async function runOne(name, port) {
   });
 
   console.log('\n=== ' + name + '（端口 ' + port + '，数据目录 ' + path.basename(dataDir) + '）===');
+
+  // 有的测试要「服务起来之前库就已经是旧版本」，用一个 .prep.js 预备数据
+  const prep = path.join(__dirname, name + '.prep.js');
+  if (fs.existsSync(prep)) {
+    const r = require('node:child_process').spawnSync(process.execPath, ['--no-warnings', prep], {
+      cwd: ROOT, env: Object.assign({}, process.env, { DATA_DIR: dataDir }), stdio: 'inherit'
+    });
+    if (r.status !== 0) {
+      console.log('  ✗ 准备数据失败');
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      return 1;
+    }
+  }
 
   const srv = spawn(process.execPath, ['--no-warnings', 'server/src/index.js'], {
     cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe']
