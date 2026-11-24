@@ -243,6 +243,7 @@ function click(listeners, act, attrs) {
     id: 1, team_id: 1, owner_id: 'p_9', creator_name: '张工', project_id: 1, project_name: '阳光小区',
     tech_id: 'p_9', tech_name: '张工', visit_date: '2026-12-05', time_slot: '上午',
     address: '3栋501', content: '厨房漏水', contact_name: '刘女士', contact_phone: '13800000001',
+    contact_email: 'owner@example.com',
     status: '待确认', priority: '普通', note: null, created_at: '2026-11-24 10:00'
   };
   const fullRoutes = meRow => (p, body) => {
@@ -381,9 +382,11 @@ function click(listeners, act, attrs) {
   ok(fh.indexOf('req-mark') >= 0, '必选字段带红色星号');
   ok(fh.indexOf('value="王建国"') >= 0 && fh.indexOf('value="13800000001"') >= 0, '预约人和电话默认填成当前登录的人');
   ok(fh.indexOf('预约人电话') >= 0, '表单里有「预约人电话」');
-  ok(fh.indexOf('可以改成业主或现场联系人') >= 0, '提示可以改成现场联系人');
+  ok(fh.indexOf('项目负责人') < 0, '页面上不解释「预约人」是谁');
+  ok(fh.indexOf('可以改成业主或现场联系人') < 0, '不再提示「预约人」可以改成业主');
+  ok(fh.indexOf('name="contact_email"') >= 0 && fh.indexOf('业主/租客邮箱') >= 0, '表单里有「业主/租客邮箱」');
   ok(fh.indexOf('维修内容') >= 0 && fh.indexOf('报修内容') < 0, '「报修内容」已改称「维修内容」');
-  ok(fh.indexOf('name="contact_email"') < 0, '表单里不再有「预约人邮箱」输入框');
+  ok(fh.indexOf('预约人邮箱') < 0, '没有「预约人邮箱」这一项');
   ok(fh.indexOf('att-drop') >= 0, '新建预约有附件区（可点选 / 拖入 / 粘贴）');
   ok(fh.indexOf('Ctrl+V') >= 0, '附件区提示可以粘贴截图');
 
@@ -391,9 +394,14 @@ function click(listeners, act, attrs) {
   const dh = full.nodes['#modal-root'].innerHTML;
   ok(dh.indexOf('预约人') >= 0, '预约详情里有「预约人」');
   ok(dh.indexOf('刘女士') >= 0 && dh.indexOf('13800000001') >= 0, '详情里预约人的姓名和电话都在');
+  ok(dh.indexOf('业主/租客邮箱') >= 0 && dh.indexOf('owner@example.com') >= 0, '详情里有业主/租客邮箱');
   ok(dh.indexOf('维修内容') >= 0, '详情里也叫「维修内容」');
   ok(dh.indexOf('创建人') >= 0, '管理员能看到「创建人」');
   ok(dh.indexOf('取消这条预约') >= 0, '管理员能取消任何一条预约');
+  ok(dh.indexOf('通知业主/租客') >= 0 && dh.indexOf('data-act="mail-owner"') >= 0, '详情里有「通知业主/租客」');
+  ok(dh.indexOf('复制通知文案') < 0, '去掉「复制通知文案」');
+  ok(dh.indexOf('发派单邮件') < 0, '去掉「发派单邮件」');
+  ok(dh.indexOf('发预约确认') < 0, '「发预约确认」改成了「通知业主/租客」');
 
   console.log('\n[12] 维修人员看别人的单：只能标记，看不到创建人');
   const techRoutes = fullRoutes(techRow);
@@ -407,6 +415,7 @@ function click(listeners, act, attrs) {
   click(asTech.listeners, 'open-appt', { id: '1' });
   const th2 = asTech.nodes['#modal-root'].innerHTML;
   ok(th2.indexOf('标记为已确认') >= 0, '维修人员能标记状态');
+  ok(th2.indexOf('标记为取消') >= 0, '维修人员能「标记为取消」');
   ok(th2.indexOf('取消这条预约') < 0, '维修人员看不到「取消这条预约」');
   ok(th2.indexOf('创建人') < 0 && th2.indexOf('最后改动') < 0, '创建人 / 改动记录只有管理员可见');
   ok(th2.indexOf('data-act="edit-appt"') < 0, '维修人员不能编辑别人的单');

@@ -106,7 +106,7 @@ async function upload(token, name, buf, apptId, mime) {
     ok(bad.status === 404, '别的团队不能往这条单上传', bad.json);
   }
 
-  console.log('\n[6] 维修人员：只能标记状态，不能改内容、不能取消');
+  console.log('\n[6] 维修人员：能标记状态，不能改内容');
   const editByTech = await db(tech, {
     table: 'appointments', action: 'update',
     values: { address: '偷偷改地址' },
@@ -123,12 +123,23 @@ async function upload(token, name, buf, apptId, mime) {
   ok(mark.json.data[0].updater_name === '张工', '记录了改动人', mark.json.data[0].updater_name);
   ok(!!mark.json.data[0].updated_at, '记录了改动时间', mark.json.data[0].updated_at);
 
+  console.log('\n[6b] 维修人员可以「标记为取消」，但不能改别人的单');
+  const made2 = await db(req, {
+    table: 'appointments', action: 'insert',
+    values: {
+      visit_date: '2026-12-21', time_slot: '下午', address: '01市01区 2栋',
+      content: '门锁坏了', project_id: proj.json.data[0].id, project_name: '恒静安世纪',
+      tech_id: techP.id, tech_name: '张工'
+    }
+  });
+  const appt2 = made2.json.data[0];
   const cancelByTech = await db(tech, {
     table: 'appointments', action: 'update',
     values: { status: '已取消' },
-    filters: [{ op: 'eq', col: 'id', val: appt.id }]
+    filters: [{ op: 'eq', col: 'id', val: appt2.id }]
   });
-  ok(cancelByTech.status === 403, '维修工不能取消预约', cancelByTech.json);
+  ok(cancelByTech.status === 200 && cancelByTech.json.data[0].status === '已取消',
+    '维修工把这条单标记为已取消', cancelByTech.json);
 
   console.log('\n[7] 预约人可以取消自己的');
   const cancelByOwner = await db(req, {

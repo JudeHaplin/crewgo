@@ -1117,7 +1117,7 @@
           (usableCount ? (on ? '已启用' : '已配置 · 未启用') : '未配置') + '</span></div>' +
       '<div class="card-body">' +
         '<div class="list-row" style="padding:0 0 12px;border:0">' +
-          '<div class="grow"><div class="nm">启用邮件</div><div class="sub">派单通知维修工、预约确认给业主、每日汇总</div></div>' +
+          '<div class="grow"><div class="nm">启用邮件</div><div class="sub">派单通知维修工、维修通知业主/租客、每日汇总</div></div>' +
           '<label class="switch"><input type="checkbox" data-act="toggle-email"' + (on ? ' checked' : '') + '><i></i></label>' +
         '</div>' +
         '<div class="field"><label>每日汇总收件邮箱</label><input class="input" type="email" data-field="digest_email" value="' + esc(v('digest_email')) + '" placeholder="每天一封派单汇总，可留空"></div>' +
@@ -1503,7 +1503,7 @@
         '① <b>站内通知</b>：右上角铃铛，登录后在系统里就能看到；<br>' +
         '② <b>电脑弹窗</b>：页面开着时弹系统通知（点上面的按钮授权）；<br>' +
         '③ <b>微信推送</b>：填了 token 才会发，走 PushPlus 公众号，点开能跳回系统；<br>' +
-        '④ <b>邮件</b>：维修工填了邮箱就发派单和出发提醒，业主填了邮箱就发预约确认，统筹可收每日汇总；<br>' +
+        '④ <b>邮件</b>：维修工填了邮箱就发派单和出发提醒，预约单里填了业主/租客邮箱就能一键通知业主，统筹可收每日汇总；<br>' +
         '⑤ <b>出发提醒</b>：出发前一天/当天自动补发一次，避免漏单。' +
       '</p></div></div>';
   }
@@ -1694,7 +1694,7 @@
     // 项目和维修人员都是必选项：只留一个禁用的占位项，没选就提交不了（不再有「不指定 / 待分配」）
     const projPlaceholder = projectOpts.length ? '请选择项目' : '还没有项目，先去「设置 → 项目」建一个';
     const techPlaceholder = techOpts.length ? '请选择维修人员' : '还没有维修人员，先去「设置 → 人员」添加';
-    // 新建时「预约人」默认就是当前登录的人，可以改成现场联系人
+    // 「预约人」= 项目负责人（给维修人员派活的那个人），新建时默认就是当前登录的人
     const cName = a.contact_name || (a.id ? '' : (state.profile.name || ''));
     const cPhone = a.contact_phone || (a.id ? '' : (state.profile.phone || ''));
     return modalShell((a.id ? '编辑预约' : '新建预约'),
@@ -1719,10 +1719,10 @@
         '<div class="field"><label>维修地址</label><input class="input" name="address" value="' + esc(a.address || '') + '" placeholder="小区 / 楼栋 / 门牌"></div>' +
         '<div class="field"><label>维修内容</label><textarea class="textarea" name="content" placeholder="哪里坏了，需要带什么材料">' + esc(a.content || '') + '</textarea></div>' +
         '<div class="form-row">' +
-          '<div class="field"><label>预约人</label><input class="input" name="contact_name" value="' + esc(cName) + '" placeholder="谁报的修 / 谁负责对接"></div>' +
+          '<div class="field"><label>预约人</label><input class="input" name="contact_name" value="' + esc(cName) + '" placeholder="姓名"></div>' +
           '<div class="field"><label>预约人电话</label><input class="input" name="contact_phone" type="tel" value="' + esc(cPhone) + '" placeholder="上门前会打这个号码"></div>' +
         '</div>' +
-        (a.id ? '' : '<div class="hint" style="margin:-8px 0 12px">默认填的是你自己的姓名和电话，可以改成业主或现场联系人。通知邮箱用各人在「设置」里填的那个，没填就不发邮件。</div>') +
+        '<div class="field"><label>业主/租客邮箱</label><input class="input" type="email" name="contact_email" value="' + esc(a.contact_email || '') + '" placeholder="选填，填了才能给业主/租客发维修通知"></div>' +
         '<div class="field"><label>附件</label>' +
           '<div class="att-drop" id="att-drop" data-act="pick-att">' +
             '<div class="att-drop-t">点击选择文件，或把图片/文件拖到这里，也可以直接 Ctrl+V 粘贴截图</div>' +
@@ -1762,10 +1762,9 @@
     };
   }
 
-  /** 给预约人发消息用的邮箱：优先取他本人在「设置」里填的那个 */
-  function apptContactEmail(a) {
-    const p = a.owner_id ? profileById(a.owner_id) : null;
-    return String((p && p.email) || a.contact_email || '').trim();
+  /** 业主/租客的收件邮箱：新建预约时填的那个，没填就只能给预约人自己发站内通知 */
+  function apptOwnerEmail(a) {
+    return String((a && a.contact_email) || '').trim();
   }
 
   function apptAttsHtml(a) {
@@ -1808,6 +1807,7 @@
       line('上门时间', a.visit_date + ' ' + a.time_slot) +
       line('维修内容', a.content || '—') +
       line('预约人', [a.contact_name, a.contact_phone].filter(Boolean).join('　') || '—') +
+      (a.contact_email ? line('业主/租客邮箱', a.contact_email) : '') +
       (a.note ? line('备注', a.note) : '') +
       (attHtml ? lineRaw('附件', attHtml) : '') +
       // 创建人 / 改动记录只给管理员看
@@ -1819,12 +1819,14 @@
         '<button class="btn btn-sm" data-act="set-status" data-id="' + a.id + '" data-status="' + s + '">标记为' + s + '</button>').join('') + '</div>' : '') +
       (caps.canCancel && a.status !== '已取消' && a.status !== '已完成'
         ? '<div class="status-quick"><button class="btn btn-sm btn-danger" data-act="set-status" data-id="' + a.id + '" data-status="已取消">取消这条预约</button></div>'
+        : '') +
+      // 维修人员不能「取消」别人的单，但能标记这条单做不了（取消的由预约人确认）
+      (!caps.canCancel && caps.myTech && a.status !== '已取消' && a.status !== '已完成'
+        ? '<div class="status-quick"><button class="btn btn-sm" data-act="mark-cancel" data-id="' + a.id + '">标记为取消</button></div>'
         : '');
 
     openModal(modalShell('预约详情', body,
-      '<button class="btn" data-act="copy-appt" data-id="' + a.id + '">复制通知文案</button>' +
-      (mailReady() ? '<button class="btn btn-sm" data-act="mail-appt" data-id="' + a.id + '" data-kind="assign">发派单邮件</button>' : '') +
-      (mailReady() && isEmail(apptContactEmail(a)) ? '<button class="btn btn-sm" data-act="mail-appt" data-id="' + a.id + '" data-kind="confirm">发预约确认</button>' : '') +
+      '<button class="btn btn-sm" data-act="mail-owner" data-id="' + a.id + '">通知业主/租客</button>' +
       (caps.canEdit ? '<button class="btn" data-act="edit-appt" data-id="' + a.id + '">编辑</button>' : '') +
       (canDel ? '<button class="btn btn-danger" data-act="del-appt" data-id="' + a.id + '">删除</button>' : '')
     ));
@@ -1855,6 +1857,7 @@
       content: g('content'),
       contact_name: g('contact_name'),
       contact_phone: g('contact_phone'),
+      contact_email: g('contact_email') || null,
       priority: g('priority') || '普通',
       status: g('status') || '待确认',
       note: g('note')
@@ -2087,9 +2090,9 @@
       const token = (tp && tp.push_token) || (state.settings && state.settings.pushplus_token) || '';
       if (token) pushWeChat(token, '新维修预约 · ' + (a.tech_name || '待分配'), text, appLink());
     }
-    // 邮件：派单给维修工、预约确认给业主（各自有邮箱才发，失败不阻断）
+    // 邮件：派单给维修工（他有邮箱才发，失败不阻断）。
+    // 业主/租客的通知不自动发，由详情里的「通知业主/租客」手动触发。
     await mailAssignment(a).catch(() => false);
-    await mailConfirm(a).catch(() => false);
   }
 
   function apptText(a) {
@@ -2261,33 +2264,32 @@
     return r.ok;
   }
 
-  /* 预约确认：发给预约人本人，邮箱取他在「设置」里填的那个，没填就不发 */
-  async function mailConfirm(a) {
+  /* 通知业主/租客：发到新建预约时填的「业主/租客邮箱」，没填就不发 */
+  async function mailOwnerNotify(a) {
     if (!mailOn()) return false;
-    const to = apptContactEmail(a);
+    const to = apptOwnerEmail(a);
     if (!isEmail(to)) return false;
     const when = dayLabel(a.visit_date) + ' ' + (a.time_slot || '');
     const r = await sendMail({
       to: to,
-      toName: a.contact_name || '',
-      subject: '【预约确认】' + when + ' 上门维修',
-      kind: 'confirm',
+      toName: '',
+      subject: '【维修通知】' + when + ' 上门维修',
+      kind: 'owner',
       html: mailHtml({
-        title: '你的上门维修已安排',
+        title: '上门维修已安排',
         badge: when,
-        intro: (a.contact_name ? a.contact_name + '，你好：' : '你好：') +
-          '我们已安排维修人员在上述时间上门，请留意来电。如需改期，请联系对接人。',
+        intro: '你好：我们已安排维修人员在上述时间上门，请留意来电。如需改期，请联系下面的对接人。',
         rows: [
           { k: '上门时间', v: when },
           { k: '维修人员', v: a.tech_name || '待安排' },
           { k: '地址', v: a.address || '' },
           { k: '维修事项', v: a.content || '' },
           { k: '项目', v: a.project_name || '' },
-          { k: '预约人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() },
+          { k: '对接人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() },
           { k: '单号', v: '#' + a.id }
         ],
         tip: '如果这个时间不方便，请提前告知，我们可以改期。',
-        foot: '如需改期或取消，直接回复对接人电话即可。'
+        foot: '如需改期或取消，直接联系对接人即可。'
       })
     });
     if (r.ok) {
@@ -2462,9 +2464,9 @@
         break;
       }
       case 'set-status': setStatus(Number(id), el.getAttribute('data-status')); break;
+      case 'mark-cancel': setStatus(Number(id), '已取消'); break;
       case 'del-appt': delAppt(Number(id)); break;
-      case 'copy-appt': copyAppt(Number(id)); break;
-      case 'mail-appt': mailFromDetail(id, el.getAttribute('data-kind')); break;
+      case 'mail-owner': mailFromDetail(id); break;
       case 'copy-today': copyDispatch(todayStr()); break;
       case 'copy-tomorrow': copyDispatch(addDays(1)); break;
       case 'select-day': state.board.day = el.getAttribute('data-date'); render(); break;
@@ -3163,7 +3165,10 @@
     const a = state.appointments.filter(x => Number(x.id) === Number(id))[0];
     if (!a) return;
     if (status === '已取消') {
-      const ok = await confirmDialog('取消这条预约', '取消后维修人员会收到通知，这条单也不再出现在排期里。确定取消吗？');
+      const caps = apptCaps(a);
+      const ok = caps.canCancel
+        ? await confirmDialog('取消这条预约', '取消后维修人员会收到通知，这条单也不再出现在排期里。确定取消吗？')
+        : await confirmDialog('标记为取消', '标记后这条预约会显示为「已取消」，预约人会收到通知。');
       if (!ok) return;
     }
     // updated_at / 改动人由服务端盖章，前端不用传
@@ -3235,21 +3240,17 @@
     toast('已删除');
   }
 
-  function copyAppt(id) {
+  /* 详情里的「通知业主/租客」：没填业主/租客邮箱就直接提示，不硬发 */
+  async function mailFromDetail(id) {
     const a = state.appointments.filter(x => String(x.id) === String(id))[0];
     if (!a) return;
-    copyText(apptText(a));
-  }
-
-  async function mailFromDetail(id, kind) {
-    const a = state.appointments.filter(x => String(x.id) === String(id))[0];
-    if (!a) return;
+    const to = apptOwnerEmail(a);
+    if (!isEmail(to)) { toast('未填写业主/租客邮箱', 4000); return; }
     if (!mailReady()) { toast('邮件还没配置，去 设置 → 通知 里填邮箱账号和授权码'); return; }
     toast('正在发送…');
-    const ok = kind === 'confirm' ? await mailConfirm(a).catch(() => false) : await mailAssignment(a).catch(() => false);
-    if (ok) { toast('已发出'); return; }
-    const who = kind === 'confirm' ? '预约人还没在「设置 → 个人资料」里填邮箱' : '被指派的维修工没填邮箱';
-    toast('没发出去：' + who + '，或邮件配置有误。可在「发送记录」里看具体原因', 5000);
+    const ok = await mailOwnerNotify(a).catch(() => false);
+    if (ok) { toast('已通知 ' + to); return; }
+    toast('没发出去：邮件配置可能有误，可在「发送记录」里看具体原因', 5000);
   }
 
   function copyText(text) {

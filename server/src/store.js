@@ -713,8 +713,8 @@ function assertCan(actor, table, action, payload, filters) {
         throw deny('只有创建人或团队管理员能删除这条预约');
       }
     }
-    // 不是自己预约的单：只有管理员能改内容；其他人（正是这单的维修人员）
-    // 只能改状态做标记，而且不能把状态改成「已取消」——取消是预约人自己的权利
+    // 不是自己创建的单：只有管理员能改内容；其他人（正是这单的维修人员）
+    // 只能改状态做标记。维修人员可以「标记为取消」，改内容仍然只给预约人和管理员
     if (action === 'update' && !admin) {
       const target = load();
       if (!target) throw deny('只能按单号修改预约');
@@ -722,10 +722,13 @@ function assertCan(actor, table, action, payload, filters) {
       if (target.owner_id !== actor.id) {
         const list = Array.isArray(payload) ? payload : [payload || {}];
         const allowed = ['status', 'updated_at', 'updater_id', 'updater_name', 'reminded_at', 'mailed_at'];
+        const isTech = String(target.tech_id || '') === String(actor.id);
         for (const v of list) {
           const extra = Object.keys(v || {}).filter(k => !allowed.includes(k));
           if (extra.length) throw deny('只有预约人和管理员能修改这条预约的内容');
-          if (String((v || {}).status || '') === '已取消') throw deny('只有预约人自己能取消预约，维修人员请标记状态');
+          if (String((v || {}).status || '') === '已取消' && !isTech) {
+            throw deny('只有预约人、这单的维修人员或管理员能取消预约');
+          }
         }
       }
     }
