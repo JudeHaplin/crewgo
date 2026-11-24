@@ -12,21 +12,30 @@ set -euo pipefail
 
 PORT="${PORT:-8080}"
 DATA_DIR="${DATA_DIR:-/opt/crewgo/data}"
-# 内置兜底版本；正常情况下从 GitHub 取最新 release，免得每次发版都要改脚本
-FALLBACK_TAG="1.2.4"
-if [ -z "${VERSION:-}" ] && [ -z "${IMAGE:-}" ]; then
-  VERSION=$(curl -fsSL -m 6 https://api.github.com/repos/JudeHaplin/crewgo/releases/latest 2>/dev/null \
-    | tr -d ' \n' | sed -n 's/.*"tag_name":"v\{0,1\}\([^"]*\)".*/\1/p' || true)
-  [ -n "${VERSION:-}" ] || VERSION="$FALLBACK_TAG"
-fi
-IMAGE="${IMAGE:-ghcr.io/judehaplin/crewgo:${VERSION:-$FALLBACK_TAG}}"
-TAG="${IMAGE##*:}"
 NAME_PATH="judehaplin/crewgo"
 MIRROR_ROOT="${MIRROR_ROOT:-ghcr.nju.edu.cn}"
 
 say() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m提示：\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
+
+# 内置兜底版本；正常情况下从 GitHub 取最新 release，免得每次发版都要改脚本。
+# 注意：国内访问 api.github.com 常常超时（这里只等 6 秒），一旦取不到就会用下面这个版本，
+# 所以它必须每次发版都更新——否则「升级」会静默降级回旧版。
+FALLBACK_TAG="1.2.6"
+if [ -z "${VERSION:-}" ] && [ -z "${IMAGE:-}" ]; then
+  VERSION=$(curl -fsSL -m 6 https://api.github.com/repos/JudeHaplin/crewgo/releases/latest 2>/dev/null \
+    | tr -d ' \n' | sed -n 's/.*"tag_name":"v\{0,1\}\([^"]*\)".*/\1/p' || true)
+  if [ -n "${VERSION:-}" ]; then
+    say "GitHub 最新版本：$VERSION"
+  else
+    VERSION="$FALLBACK_TAG"
+    warn "取不到 GitHub 最新版本（多半是网络不通），将安装脚本内置版本 $VERSION。"
+    warn "想装指定版本：VERSION=1.2.6 bash install.sh"
+  fi
+fi
+IMAGE="${IMAGE:-ghcr.io/judehaplin/crewgo:${VERSION:-$FALLBACK_TAG}}"
+TAG="${IMAGE##*:}"
 
 # 优先取公网 IP（云厂商元数据最可靠，其次公共探测服务），最后才退回内网地址
 public_ip() {
