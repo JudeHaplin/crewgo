@@ -332,7 +332,7 @@ function click(listeners, act, attrs) {
   let ah = full.nodes['#page'].innerHTML;
   ok(ah.indexOf('设为管理员') >= 0, '管理员页能把成员设为管理员');
   ok(ah.indexOf('转让统筹管理员身份') >= 0, '统筹能在这里转让身份');
-  ok(ah.indexOf('全团队只有一个') >= 0, '写明统筹全团队只有一个、只能转让');
+  ok(ah.indexOf('全团队只有一个') < 0 && ah.indexOf('普通成员：看排期') < 0, '这一页不再放解释性文案');
   ok(ah.indexOf('统筹管理员</span>') >= 0, '统筹那一行只有标签');
 
   click(full.listeners, 'transfer-owner');

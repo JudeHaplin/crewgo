@@ -1168,9 +1168,6 @@
       const tag = role === 'owner'
         ? '<span class="tag tag-加急">统筹管理员</span>'
         : (role === 'admin' ? '<span class="tag tag-已确认">管理员</span>' : '<span class="tag tag-待确认">成员</span>');
-      const note = role === 'owner'
-        ? '全团队只有一个，不能被设置或取消，只能由他本人转让'
-        : (role === 'admin' ? '和统筹一样能管人、管项目、管排期（系统级配置除外）' : '普通成员：看排期、提预约、改状态');
       let actions = '';
       if (role === 'owner') {
         actions = owner ? '<button class="btn btn-sm" data-act="transfer-owner">转让统筹管理员身份</button>' : '';
@@ -1184,7 +1181,7 @@
         '<div class="grow"><div class="nm">' + esc(p.name) + ' ' + tag +
           (me ? ' <span class="tag tag-已确认">我</span>' : '') +
           (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') + '</div>' +
-          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(note) + '</div></div>' +
+          '<div class="sub">' + esc(p.phone || '无手机号') + '</div></div>' +
         actions +
       '</div>';
     }).join('');
@@ -1195,15 +1192,7 @@
         '<div class="card-head"><h3 class="card-title">管理员（' + adminCount + '）</h3>' +
           '<span class="tag tag-加急">统筹管理员 1</span></div>' +
         (rows || '<div class="empty"><p>还没有成员</p><span>先用团队码把人拉进来</span></div>') +
-      '</div>' +
-      '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint" style="margin:0">' +
-        '<b>统筹管理员</b>全团队只有一个：不能被「设置」出来，也不能被取消，只能由现任统筹<b>亲手转让</b>' +
-        '（要输入自己的登录 PIN + 手输「确认」）。<br>' +
-        '<b>管理员</b>可以有多个，' + (canEdit ? '在上面的列表里点「设为管理员」即可' : '由统筹管理员或管理员设置') +
-        '；管理员之间权限相同，能管项目、人员、排期和通知，也能任免其他管理员，' +
-        '但不能取消统筹、不能碰系统级配置（发信邮箱、微信登录、导入导出）。' +
-        (canEdit ? '' : '<br>你现在的身份是「' + esc(teamRoleLabel(actor.team_role)) + '」，只能查看，不能调整。') +
-      '</p></div></div>';
+      '</div>';
   }
 
   /* 转让统筹：选人 + 自己的 PIN + 手输「确认」，三重确认防误点 */
