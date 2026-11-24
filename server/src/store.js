@@ -94,6 +94,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   avatar TEXT,
   last_login_at TEXT,
   email_verified_at TEXT,
+  email_pending TEXT,
   email_code TEXT,
   email_code_exp TEXT,
   email_code_tries INTEGER NOT NULL DEFAULT 0,
@@ -222,7 +223,7 @@ const TABLES = {
   profiles: {
     cols: ['id', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id',
       'created_at', 'team_id', 'team_role', 'need_profile', 'avatar', 'last_login_at',
-      'email_verified_at', 'email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at'],
+      'email_verified_at', 'email_pending', 'email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at'],
     bool: ['active', 'need_profile'],
     num: ['team_id', 'email_code_tries']
   },
@@ -327,6 +328,8 @@ const PROFILE_MIGRATIONS = [
   ['last_login_at', 'TEXT'],
   // 邮箱验证：验证码只存 10 分钟，验证过的邮箱记 email_verified_at
   ['email_verified_at', 'TEXT'],
+  // 待验证的新邮箱：验证通过才写进 email，中途取消不会把已验证的旧地址弄丢
+  ['email_pending', 'TEXT'],
   ['email_code', 'TEXT'],
   ['email_code_exp', 'TEXT'],
   ['email_code_tries', 'INTEGER NOT NULL DEFAULT 0'],

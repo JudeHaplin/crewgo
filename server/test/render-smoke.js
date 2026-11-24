@@ -245,12 +245,12 @@ function click(listeners, act, attrs) {
     address: '3栋501', content: '厨房漏水', contact_name: '刘女士', contact_phone: '13800000001',
     status: '待确认', priority: '普通', note: null, created_at: '2026-11-24 10:00'
   };
-  const full = await run((p, body) => {
+  const fullRoutes = meRow => (p, body) => {
     const path = p.split('?')[0];
     if (path === '/api/auth/status') return { initialized: true, wechat: { mp: true, qr: true }, version: '1.2.0' };
     if (path === '/api/auth/me') {
       return {
-        user: Object.assign({}, adminRow, { wx_bound: false, need_profile: false }),
+        user: Object.assign({}, meRow, { wx_bound: false, need_profile: false }),
         team: { id: 1, name: '测试物业', code: 'ABC123456', owner_id: 'p_1', allow_direct: false, stats: { members: 2, pending: 1, appointments: 1, projects: 1 } },
         pending: null,
         wechat: { mp: true, qr: true }
@@ -260,7 +260,7 @@ function click(listeners, act, attrs) {
     if (path === '/api/settings/wechat') return { wx_mp_appid: 'wxaa', wx_qr_appid: 'wxbb', wx_mp_secret_set: true, wx_qr_secret_set: false, enabled: { mp: true, qr: true }, callback: 'http://x/api/auth/wechat/callback' };
     if (path === '/api/db') {
       const table = body && body.table;
-      if (table === 'profiles') return { data: [adminRow, techRow] };
+      if (table === 'profiles') return { data: [meRow, techRow] };
       if (table === 'projects') return { data: [{ id: 1, team_id: 1, name: '阳光小区', address: '3栋', color: '#2b6ef6', active: 1 }] };
       if (table === 'appointments') return { data: [apptRow] };
       if (table === 'settings') return { id: 1, team_id: 1, notify_enabled: 1, email_enabled: 0, smtp_pass_set: false };
@@ -269,7 +269,8 @@ function click(listeners, act, attrs) {
       return { data: [] };
     }
     return undefined;
-  }, 'tok-admin');
+  };
+  const full = await run(fullRoutes(adminRow), 'tok-admin');
   const page0 = full.nodes['#page'].innerHTML;
   ok(page0.indexOf('排期看板') >= 0, '主界面渲染排期看板');
   ok(page0.indexOf('休 张工') >= 0, '日历格子里直接写出「谁」在休息，不只是数量');
@@ -346,6 +347,29 @@ function click(listeners, act, attrs) {
   const mh = full.nodes['#modal-root'].innerHTML;
   ok(mh.indexOf('岗位身份') >= 0, '人员编辑里只有「岗位身份」');
   ok(mh.indexOf('统筹管理员') < 0 && mh.indexOf('设为管理员') < 0, '人员编辑里不再出现统筹/管理员设置');
+
+  console.log('\n[10] 我的通知邮箱：验证后锁死，改要单独点「更改邮箱」');
+  const lockedRow = Object.assign({}, adminRow, {
+    email: 'boss@example.com', email_verified_at: '2026-11-24 10:00', email_pending: null, email_verified: true
+  });
+  const lk = await run(fullRoutes(lockedRow), 'tok-admin');
+  click(lk.listeners, 'nav', { nav: 'settings' });
+  click(lk.listeners, 'settings-tab', { tab: 'notify' });
+  let nh = lk.nodes['#page'].innerHTML;
+  ok(nh.indexOf('更改邮箱') >= 0, '已验证后出现「更改邮箱」按钮');
+  ok(nh.indexOf('发一封邮件测试') >= 0, '邮箱区有「发一封邮件测试」按钮');
+  ok(nh.indexOf('data-field="my_email_code"') < 0, '验证成功后验证码输入框收起来');
+  ok(nh.indexOf('data-act="send-email-code"') < 0, '「发送验证码」也一起收起来');
+  ok(nh.indexOf('已验证') >= 0, '标签显示「已验证」');
+
+  click(lk.listeners, 'edit-my-email', {});
+  nh = lk.nodes['#page'].innerHTML;
+  ok(nh.indexOf('data-field="my_email_code"') >= 0, '点了「更改邮箱」才展开验证码输入');
+  ok(nh.indexOf('取消更改') >= 0, '展开后能取消，回到锁定状态');
+
+  click(lk.listeners, 'settings-tab', { tab: 'me' });
+  const meh = lk.nodes['#page'].innerHTML;
+  ok(meh.indexOf('readonly') >= 0 && meh.indexOf('已锁定') >= 0, '「我的资料」里的邮箱也锁住了，并指向通知页去改');
 
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);

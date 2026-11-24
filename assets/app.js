@@ -128,6 +128,7 @@
     team: null, pending: null, wechat: { mp: false, qr: false },
     teamRequests: [], wxSettings: null, teamMode: 'join',
     mailAccounts: [], mail: { ready: false },
+    emailEdit: false,   // 已验证的邮箱是锁住的，点了「更改邮箱」才进入编辑态
     view: 'board',
     board: { year: new Date().getFullYear(), month: new Date().getMonth(), day: todayStr() },
     filters: { tech: '', project: '', status: '', q: '' },
@@ -1437,21 +1438,45 @@
 
     const myToken = state.profile.push_token || '';
     const myEmail = String(state.profile.email || '');
+    const pendingEmail = String(state.profile.email_pending || '');
     const verified = !!(state.profile.email_verified_at || state.profile.email_verified);
-    const emailTag = !myEmail
-      ? '<span class="tag tag-已取消">未填</span>'
-      : (verified ? '<span class="tag tag-已完成">已验证</span>' : '<span class="tag tag-待确认">未验证</span>');
+    // 已验证就锁住：不点「更改邮箱」不给改，避免误改把已经能收信的地址弄丢
+    const locked = verified && !state.emailEdit;
+    const emailTag = verified
+      ? '<span class="tag tag-已完成">已验证</span>'
+      : (pendingEmail || myEmail
+        ? '<span class="tag tag-待确认">未验证</span>'
+        : '<span class="tag tag-已取消">未填</span>');
+
+    // 已锁定：只读展示 + 更改邮箱 + 发测试信
+    const lockedBody =
+      '<div class="field"><label>我的邮箱</label>' +
+        '<div class="team-code-row">' +
+          '<input class="input" value="' + esc(myEmail) + '" readonly data-field="my_email_locked">' +
+          '<button class="btn btn-sm" data-act="edit-my-email">更改邮箱</button>' +
+        '</div>' +
+        '<div class="hint">已验证。派单、出发提醒、每日汇总都发到这个地址；要换地址点「更改邮箱」，改完需要重新验证。</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
+        '<button class="btn btn-sm" data-act="test-my-email">发一封邮件测试</button>' +
+      '</div>';
+
+    // 编辑中（首次设置，或点了「更改邮箱」）
+    const editBody =
+      '<div class="field"><label>我的邮箱</label>' +
+        '<div class="team-code-row"><input class="input" type="email" data-field="my_email" value="' + esc(pendingEmail || myEmail) + '" placeholder="your@qq.com">' +
+        '<button class="btn btn-sm" data-act="send-email-code">发送验证码</button></div></div>' +
+      '<div class="field"><label>验证码（6 位数字，10 分钟内有效）</label>' +
+        '<div class="team-code-row"><input class="input code-input" data-field="my_email_code" inputmode="numeric" maxlength="6" placeholder="123456">' +
+        '<button class="btn btn-sm" data-act="verify-email-code">验证</button></div>' +
+        (pendingEmail ? '<div class="hint">正在验证 <b>' + esc(pendingEmail) + '</b>，验证通过后才会替换现在的邮箱。</div>' : '') +
+      '</div>' +
+      (verified ? '<div style="margin-bottom:14px"><button class="btn btn-sm" data-act="cancel-my-email">取消更改</button></div>' : '');
 
     const myCard = '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">我的通知邮箱</h3>' + emailTag + '</div><div class="card-body">' +
-        '<p class="hint" style="margin:0 0 12px">派单、出发提醒、每日汇总都会发到这个邮箱。<b>填完点「发送验证码」，收到验证码填进来验证一下</b>，确保地址没写错、也确实能收到。</p>' +
-        '<div class="field"><label>我的邮箱</label>' +
-          '<div class="team-code-row"><input class="input" type="email" data-field="my_email" value="' + esc(myEmail) + '" placeholder="your@qq.com">' +
-          '<button class="btn btn-sm" data-act="send-email-code">发送验证码</button></div></div>' +
-        '<div class="field"><label>验证码（6 位数字，10 分钟内有效）</label>' +
-          '<div class="team-code-row"><input class="input code-input" data-field="my_email_code" inputmode="numeric" maxlength="6" placeholder="123456">' +
-          '<button class="btn btn-sm" data-act="verify-email-code">验证</button></div>' +
-          (verified ? '<div class="hint">已通过验证，可以放心收派单邮件。</div>' : '') +
-        '</div>' +
+        (locked
+          ? lockedBody
+          : '<p class="hint" style="margin:0 0 12px">派单、出发提醒、每日汇总都会发到这个邮箱。<b>填完点「发送验证码」，收到验证码填进来验证一下</b>，确保地址没写错、也确实能收到。</p>' + editBody) +
         '<div class="field"><label>我的 PushPlus Token（选填）</label>' +
           '<input class="input" data-field="my_push_token" value="' + esc(myToken) + '" placeholder="留空则收不到微信推送"></div>' +
         '<p class="hint" style="margin:-6px 0 12px">Token 获取方式：手机打开 <b>pushplus.plus</b> → 微信扫码登录 → 完成实名 → 复制 token → 关注它的公众号。' +
@@ -1481,14 +1506,20 @@
 
   function mePane() {
     const p = state.profile;
+    const emailLocked = !!(p.email_verified_at || p.email_verified) && !!p.email;
     return '<div class="card"><div class="card-head"><h3 class="card-title">我的资料</h3></div><div class="card-body">' +
       '<form data-form="save-me">' +
         '<div class="form-row">' +
           '<div class="field"><label>姓名</label><input class="input" name="name" value="' + esc(p.name) + '" required maxlength="20"></div>' +
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" inputmode="numeric" value="' + esc(p.phone || '') + '" maxlength="20" placeholder="11 位"></div>' +
         '</div>' +
-        '<div class="field"><label>邮箱</label><input class="input" type="email" name="email" value="' + esc(p.email || '') + '" placeholder="用于收派单和出发提醒">' +
-          '<div class="hint">改了邮箱要去「设置 → 通知 → 我的通知邮箱」点一次「发送验证码」验证，验证过地址才算通。</div></div>' +
+        '<div class="field"><label>邮箱</label>' +
+          (emailLocked
+            ? '<input class="input" type="email" value="' + esc(p.email || '') + '" readonly>' +
+              '<div class="hint">已验证，这个地址已锁定。要换邮箱请到「设置 → 通知 → 我的通知邮箱」点「更改邮箱」。</div>'
+            : '<input class="input" type="email" name="email" value="' + esc(p.email || '') + '" placeholder="用于收派单和出发提醒">' +
+              '<div class="hint">填完要去「设置 → 通知 → 我的通知邮箱」点「发送验证码」验证，验证通过才算生效。</div>') +
+        '</div>' +
         '<div class="field"><label>我的排期颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap">' +
           PALETTE.map(c => '<label style="cursor:pointer"><input type="radio" name="color" value="' + c + '"' + ((p.color || '') === c ? ' checked' : '') + ' style="display:none">' +
             '<span class="color-dot" style="width:24px;height:24px;background:' + c + ';display:inline-block;border-radius:50%;outline:' + ((p.color || '') === c ? '2px solid ' + c : 'none') + ';outline-offset:2px"></span></label>').join('') +
@@ -2272,6 +2303,9 @@
       case 'save-email': saveEmail(); break;
       case 'send-email-code': sendMyEmailCode(); break;
       case 'verify-email-code': verifyMyEmail(); break;
+      case 'edit-my-email': startEditMyEmail(); break;
+      case 'cancel-my-email': state.emailEdit = false; render(); break;
+      case 'test-my-email': testMyEmail(); break;
       case 'mail-acc-new': openMailAccountModal(null); break;
       case 'mail-acc-edit': {
         const acc = (state.mailAccounts || []).filter(x => String(x.id) === String(el.getAttribute('data-id')))[0];
@@ -3178,15 +3212,38 @@
     }
   }
 
+  function startEditMyEmail() {
+    state.emailEdit = true;
+    render();
+    const el = $('[data-field="my_email"]');
+    if (el) { el.focus(); try { el.select(); } catch (e) {} }
+  }
+
+  /* 给自己已验证的地址发一封测试信（收件人由服务端取，前端传不了） */
+  async function testMyEmail() {
+    toast('正在发送测试邮件…');
+    try {
+      const r = await window.__api('/api/auth/email/test', { method: 'POST' });
+      toast('测试邮件已发到 ' + r.to + (r.account ? '（经「' + r.account + '」）' : '') +
+        '，没收到的话翻一下垃圾箱', 6500);
+    } catch (e) {
+      toast('没发出去：' + String((e && e.message) || e), 7000);
+    }
+  }
+
   async function verifyMyEmail() {
     const codeEl = $('[data-field="my_email_code"]');
     const code = codeEl ? codeEl.value.replace(/\s/g, '') : '';
     if (!/^\d{6}$/.test(code)) { toast('验证码是 6 位数字'); return; }
+    if (codeEl) codeEl.disabled = true;
     try {
       const r = await window.__api('/api/auth/email/verify', { method: 'POST', body: JSON.stringify({ code: code }) });
-      await loadAll(); render();
-      toast('邮箱已验证：' + r.email + '，派单和提醒会发到这里', 4200);
+      state.emailEdit = false;            // 验证通过就锁回去
+      await loadAll();
+      render();
+      toast('✓ 邮箱已验证：' + r.email + '，派单和提醒会发到这里', 5000);
     } catch (e) {
+      if (codeEl) codeEl.disabled = false;
       toast(String((e && e.message) || '验证失败'), 4200);
     }
   }
@@ -3458,16 +3515,19 @@
   }
 
   async function saveMe(f) {
-    const email = (f.elements.email ? String(f.elements.email.value || '') : '').trim();
-    if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
+    // 已验证的邮箱在资料页是只读展示、不参与提交，否则「保存」会把锁定的地址清空
+    const emailEl = f.elements.email;
+    const hasEmailField = !!emailEl;
+    const email = hasEmailField ? String(emailEl.value || '').trim() : String(state.profile.email || '');
+    if (hasEmailField && email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
     const oldEmail = String(state.profile.email || '');
-    const emailChanged = (email || '') !== oldEmail;
+    const emailChanged = hasEmailField && email !== oldEmail;
     const payload = {
       name: (f.elements.name.value || '').trim(),
       phone: (f.elements.phone.value || '').trim() || null,
-      email: email || null,
       color: f.elements.color.value
     };
+    if (hasEmailField) payload.email = email || null;
     if (!payload.name) { toast('请填写姓名'); return; }
     if (payload.phone) {
       const ph = phoneError(payload.phone);

@@ -84,6 +84,9 @@ input,select,textarea{font-family:inherit;font-size:14px}
   transition:border-color .15s, box-shadow .15s;
 }
 .input:focus,.select:focus,.textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(43,110,246,.13)}
+/* 已锁定（只读）的输入框：看起来像展示而不是可编辑，避免用户以为还能直接改 */
+.input[readonly]{background:#f4f6fa;color:var(--text-2);border-color:var(--line);cursor:default;box-shadow:none}
+.input[readonly]:focus{border-color:var(--line);box-shadow:none}
 .textarea{resize:vertical;min-height:74px;line-height:1.6}
 .input-group{display:flex;gap:8px}
 .input-group .input{flex:1}

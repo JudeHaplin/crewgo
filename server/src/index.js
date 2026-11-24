@@ -157,11 +157,15 @@ function actorFrom(req) {
 
 const wxBound = id => !!store.raw().prepare('SELECT 1 AS x FROM wx_accounts WHERE profile_id = ? LIMIT 1').get(id);
 
+// 测试邮件限流：同一个人 60 秒内只能发一封，免得连点把发信额度刷完
+const mailTestAt = new Map();
+
 const publicProfile = row => ({
   id: row.id,
   name: row.name,
   role: row.role,
   email: row.email,
+  email_pending: row.email_pending || null,
   email_verified: !!row.email_verified_at,
   email_verified_at: row.email_verified_at || null,
   phone: row.phone,
@@ -848,10 +852,10 @@ async function handleApi(req, res, pathname, url) {
       return fail(res, 502, '验证码没发出去：' + (sendRes.error || '未知原因') +
         (sendRes.error && sendRes.error.indexOf('可用') >= 0 ? '' : '（检查一下管理员配的发信邮箱是否正常）'));
     }
-    // 邮箱先落库（未验证状态），验证通过后才记 email_verified_at
+    // 新邮箱先存到 email_pending，验证通过才写进 email —— 这样中途放弃也不会丢掉原来已验证的地址
     // 有效期用 Node 的时钟算（存毫秒），不依赖数据库的 localtime —— 避免容器时区不同导致算错
     store.raw().prepare(
-      "UPDATE profiles SET email = ?, email_verified_at = NULL, email_code = ?, " +
+      "UPDATE profiles SET email_pending = ?, email_code = ?, " +
       "email_code_exp = ?, email_code_tries = 0, email_code_sent_at = ? WHERE id = ?"
     ).run(email, code, String(Date.now() + 10 * 60 * 1000), String(Date.now()), actor.id);
     log('邮箱验证码已发送（' + actor.name + ' → ' + email + '）');
@@ -874,12 +878,57 @@ async function handleApi(req, res, pathname, url) {
       const left = 4 - Number(row.email_code_tries || 0);
       return fail(res, 400, '验证码不对' + (left > 0 ? '，还能再试 ' + left + ' 次' : '，请重新发送'));
     }
+    // 验证通过：把待验证的地址正式写进 email，并清掉验证码
+    const finalEmail = String(row.email_pending || row.email || '');
     store.raw().prepare(
-      "UPDATE profiles SET email_verified_at = datetime('now','localtime'), email_code = NULL, " +
-      "email_code_exp = NULL, email_code_tries = 0 WHERE id = ?"
-    ).run(actor.id);
-    log('邮箱已验证（' + actor.name + ' → ' + row.email + '）');
-    return send(res, 200, { ok: true, email: row.email });
+      "UPDATE profiles SET email = ?, email_verified_at = datetime('now','localtime'), email_pending = NULL, " +
+      "email_code = NULL, email_code_exp = NULL, email_code_tries = 0 WHERE id = ?"
+    ).run(finalEmail, actor.id);
+    log('邮箱已验证（' + actor.name + ' → ' + finalEmail + '）');
+    return send(res, 200, { ok: true, email: finalEmail });
+  }
+
+  /* 给自己已验证的通知邮箱发一封测试信：收件人固定取库里本人的地址，前端传不了 to */
+  if (pathname === '/api/auth/email/test' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
+    const to = String(row.email || '').trim();
+    if (!to) return fail(res, 400, '还没填通知邮箱，先填一个并验证');
+    if (!row.email_verified_at) return fail(res, 400, '这个邮箱还没验证，先点「发送验证码」验证一下再测');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
+    if (!mailer.configured(actor.teamId)) {
+      return fail(res, 400, '邮件还没配好：让统筹管理员去「设置 → 通知 → 邮箱服务」填一个（QQ 邮箱 + 授权码就行）');
+    }
+    const last = mailTestAt.get(actor.id) || 0;
+    const left = 60 * 1000 - (Date.now() - last);
+    if (left > 0) return fail(res, 429, '刚发过一封测试信，' + Math.ceil(left / 1000) + ' 秒后可以再发');
+
+    const team = store.raw().prepare('SELECT name FROM teams WHERE id = ?').get(actor.teamId) || {};
+    const now = new Date().toLocaleString('zh-CN', { hour12: false });
+    const safeName = String(row.name || '').replace(/[<>&"]/g, '');
+    const r = await mailer.send(actor.teamId, {
+      to,
+      toName: row.name || '',
+      owner: actor.id,
+      kind: 'test',
+      subject: '【速派】邮件测试 —— 收到说明配置正常',
+      html: '<div style="font-family:-apple-system,Segoe UI,PingFang SC,sans-serif;font-size:14px;line-height:1.9;color:#111827">' +
+        '<p>' + safeName + '，你好：</p>' +
+        '<p>这是一封来自「速派」的测试邮件。你能看到它，说明<b>发信通道正常</b>，派单、出发提醒和每日汇总都能送到这个地址。</p>' +
+        '<table style="font-size:13px;color:#374151;border-collapse:collapse;margin:10px 0">' +
+        '<tr><td style="padding:2px 12px 2px 0;color:#6b7280">团队</td><td>' + String(team.name || '').replace(/[<>&"]/g, '') + '</td></tr>' +
+        '<tr><td style="padding:2px 12px 2px 0;color:#6b7280">收件人</td><td>' + to.replace(/[<>&"]/g, '') + '</td></tr>' +
+        '<tr><td style="padding:2px 12px 2px 0;color:#6b7280">发送时间</td><td>' + now + '</td></tr>' +
+        '</table>' +
+        '<p style="color:#6b7280;font-size:13px">如果不是你本人在「设置 → 通知 → 我的通知邮箱」点的测试，忽略这封邮件即可。</p></div>',
+      text: safeName + '，你好：\n\n这是「速派」的测试邮件，收到说明发信通道正常。\n团队：' + (team.name || '') +
+        '\n收件人：' + to + '\n发送时间：' + now + '\n\n如果不是你本人点的测试，忽略即可。'
+    });
+    if (!r.ok) return fail(res, 502, '没发出去：' + (r.error || '未知原因'));
+    mailTestAt.set(actor.id, Date.now());
+    log('测试邮件已发送（' + actor.name + ' → ' + to + '）');
+    return send(res, 200, { ok: true, to, account: r.account || null });
   }
 
   if (pathname === '/api/mail/digest' && req.method === 'POST') {

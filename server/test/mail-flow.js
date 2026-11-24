@@ -181,8 +181,15 @@ function codeFromRaw(raw) {
   ok(fakeA.state.conns === connsBefore, 'A 今天被跳过，不再浪费一次连接');
 
   console.log('\n[6] 邮箱验证码：发出去 → 填回来 → 变「已验证」');
-  const code1 = await api('/api/auth/email/code', { email: 'zhang@example.com' }, tech);
+  const mailCountBefore = fakeB.state.mails.length;
+  const code1 = await api('/api/auth/email/code', { email: 'zhang.new@example.com' }, tech);
   ok(code1.status === 200 && code1.json.ok === true, '给张工发验证码', code1.json);
+
+  // 新地址先进 email_pending：验证没通过之前，原来能收信的地址不能被动
+  const pend = await api('/api/auth/me', null, tech);
+  ok(pend.json.user.email === 'zhang@example.com', '发码期间旧邮箱保持不变（不会先被换掉）', pend.json.user);
+  ok(pend.json.user.email_pending === 'zhang.new@example.com', '新地址暂存在 email_pending', pend.json.user);
+
   const raw = fakeB.state.mails[fakeB.state.mails.length - 1] || '';
   const code = codeFromRaw(raw);
   ok(/^\d{6}$/.test(code), '从邮件正文里取到 6 位验证码（' + code + '）', code);
@@ -194,6 +201,18 @@ function codeFromRaw(raw) {
   ok(verify.status === 200 && verify.json.ok === true, '正确验证码通过', verify.json);
   const me2 = await api('/api/auth/me', null, tech);
   ok(me2.json.user.email_verified === true, '邮箱状态变成「已验证」');
+  ok(me2.json.user.email === 'zhang.new@example.com', '验证通过后才把新地址写进 email', me2.json.user);
+  ok(!me2.json.user.email_pending, '验证完成后 email_pending 清空', me2.json.user);
+
+  // 测试邮件：只有已验证的地址能发，收件人由服务端取
+  const t1 = await api('/api/auth/email/test', {}, tech);
+  ok(t1.status === 200 && t1.json.ok === true && t1.json.to === 'zhang.new@example.com', '已验证的邮箱能发测试信', t1.json);
+  ok(fakeB.state.mails.length > mailCountBefore + 1, '测试信真的进了 SMTP 通道');
+  const t2 = await api('/api/auth/email/test', {}, tech);
+  ok(t2.status === 429 && /秒后/.test(t2.json.error || ''), '60 秒内不能连点发测试信', t2.json);
+
+  const t0 = await api('/api/auth/email/test', {}, owner);
+  ok(t0.status === 400 && /邮箱/.test(t0.json.error || ''), '没填邮箱的人不能发测试信', t0.json);
 
   const again = await api('/api/auth/email/code', { email: 'zhang@example.com' }, tech);
   ok(again.status === 429 && /秒后/.test(again.json.error || ''), '60 秒内不能重复发（防刷）', again.json);
