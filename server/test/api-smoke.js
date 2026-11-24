@@ -124,6 +124,21 @@ const db = (token, q) => api('/api/db', q, token);
     ok(r.status === 200 || r.status === 404, p + ' → ' + r.status + ' ' + (r.headers.get('content-type') || ''));
   }
 
+  console.log('\n[8] 微信网页授权校验文件');
+  if (process.env.DATA_DIR) {
+    const fsx = require('node:fs'), px = require('node:path');
+    fsx.writeFileSync(px.join(process.env.DATA_DIR, 'MP_verify_Test1234.txt'), 'Test1234');
+    const hit = await fetch(BASE + '/MP_verify_Test1234.txt');
+    const body = await hit.text();
+    ok(hit.status === 200 && body.trim() === 'Test1234', '把校验文件丢进数据目录即可被微信验证到', hit.status);
+    const miss = await fetch(BASE + '/MP_verify_NotHere99.txt');
+    ok(miss.status === 404, '不存在的校验文件返回 404');
+    const trav = await fetch(BASE + '/MP_verify_..%2Frepair.db');
+    ok(trav.status === 403 || trav.status === 404, '校验文件路径不能穿越出数据目录', trav.status);
+  } else {
+    ok(true, '（跳过：没有 DATA_DIR 环境变量）');
+  }
+
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 })();

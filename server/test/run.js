@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '../..');
-const TESTS = ['api-smoke', 'client-shim', 'smtp-mail'];
+const TESTS = ['api-smoke', 'team-flow', 'render-smoke', 'client-shim', 'smtp-mail'];
 const PORT_BASE = Number(process.env.TEST_PORT_BASE || 8300);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -65,7 +65,7 @@ async function runOne(name, port) {
   const code = await new Promise(resolve => {
     const t = spawn(process.execPath, ['--no-warnings', 'server/test/' + name + '.js'], {
       cwd: ROOT,
-      env: Object.assign({}, process.env, { BASE: base }),
+      env: Object.assign({}, process.env, { BASE: base, DATA_DIR: dataDir }),
       stdio: 'inherit'
     });
     t.on('exit', resolve);

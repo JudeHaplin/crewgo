@@ -36,9 +36,10 @@ const db = cloud.database;
   const uid = sess.data.user.id;
 
   console.log('\n[2] 链式查询形态');
-  const stRow = await db.from('settings').select('*').eq('id', 1).maybeSingle();
-  ok(stRow.error === null && stRow.data && stRow.data.id === 1, 'settings maybeSingle 返回对象', stRow);
+  const stRow = await db.from('settings').select('*').maybeSingle();
+  ok(stRow.error === null && stRow.data && stRow.data.id > 0, 'settings maybeSingle 返回本团队那一行', stRow);
   ok(stRow.data && typeof stRow.data.notify_enabled === 'boolean', 'notify_enabled 是布尔');
+  ok(stRow.data && stRow.data.team_id > 0, 'settings 行已绑定当前团队', stRow.data && stRow.data.team_id);
 
   const mine = await db.from('profiles').select('*').eq('user_id', uid).maybeSingle();
   ok(mine.data && mine.data.name === '测试员', '按 user_id 查自己');
@@ -73,8 +74,8 @@ const db = cloud.database;
   await db.from('profiles').insert({ name: '小工', role: 'tech', pin: '5678' }).select();
   const relogin = await cloud.auth.signIn('小工', '5678');
   ok(relogin.error === null && relogin.data.user.role === 'tech', '新增人员可直接用 PIN 登录');
-  const denied = await db.from('settings').update({ digest_email: 'x@y.com' }).eq('id', 1).select();
-  ok(denied.error && /统筹|权限/.test(denied.error.message), '越权返回 error 而不是抛出', denied.error);
+  const denied = await db.from('settings').update({ digest_email: 'x@y.com' }).select();
+  ok(denied.error && /团队管理员|权限/.test(denied.error.message), '越权返回 error 而不是抛出', denied.error);
 
   const selfOnly = await db.from('profiles').update({ role: 'admin' }).eq('id', 'someone').select();
   ok(selfOnly.error !== null, '非管理员改他人档案被拒');

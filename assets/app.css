@@ -514,3 +514,37 @@ table.tbl tbody tr:hover{background:var(--panel-2)}
   .appt-title{font-size:15.5px}
   .appt-meta{font-size:13.5px}
 }
+
+/* ---------- 团队 / 微信 / 排休（v1.2.0 新增） ---------- */
+.seg-block{display:flex;width:100%}
+.seg-block button{flex:1}
+
+.wx-banner{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  background:linear-gradient(90deg,#f0f7ff,#f7fbff);
+  border:1px solid #d8e6ff;border-radius:12px;
+  padding:11px 14px;margin-bottom:14px;font-size:13px;color:#1f3a68;
+}
+.wx-banner .grow{flex:1;min-width:180px;line-height:1.55}
+.wx-banner .btn-ghost{color:var(--text-3)}
+
+.team-code-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.team-code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:19px;letter-spacing:.14em;font-weight:650;
+  background:#f4f6fa;border:1px dashed #c9d2e3;border-radius:9px;
+  padding:7px 13px;color:var(--text);
+}
+.code-input{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  letter-spacing:.22em;font-size:17px;text-transform:uppercase;
+}
+
+.cal-off{
+  margin-top:2px;font-size:10px;line-height:1.5;color:#8a6d1f;
+  background:#fdf6e3;border-radius:4px;padding:0 3px;display:inline-block;
+}
+.off-note{
+  margin-top:10px;padding:9px 12px;border-radius:9px;
+  background:#fdf8ec;border:1px solid #f2e6c8;color:#7a5c12;font-size:12.5px;
+}

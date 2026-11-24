@@ -2,15 +2,84 @@
 /**
  * 数据层：SQLite（Node 内置 node:sqlite）+ 极简查询执行器
  * 前端沿用原来的链式调用习惯，这里负责把「描述符」翻译成 SQL 并做权限校验。
+ *
+ * 团队隔离是硬约束：所有业务表都带 team_id，/api/db 在服务端强制注入过滤，
+ * 前端传什么都不会看到别的团队的数据。
  */
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const DB_FILE = path.join(DATA_DIR, 'repair.db');
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+
+/* settings 单抽出来：老库里是 id=1 + CHECK(id=1)，团队化必须重建，见 rebuildSettings() */
+const SETTINGS_DDL = `
+CREATE TABLE IF NOT EXISTS settings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER UNIQUE,
+  notify_enabled INTEGER NOT NULL DEFAULT 1,
+  pushplus_token TEXT,
+  email_enabled INTEGER NOT NULL DEFAULT 0,
+  emailjs_service_id TEXT,
+  emailjs_template_id TEXT,
+  emailjs_public_key TEXT,
+  digest_email TEXT,
+  last_digest_date TEXT,
+  mail_mode TEXT NOT NULL DEFAULT 'smtp',
+  smtp_host TEXT,
+  smtp_port INTEGER DEFAULT 465,
+  smtp_user TEXT,
+  smtp_pass TEXT,
+  smtp_from TEXT,
+  smtp_name TEXT,
+  wx_mp_appid TEXT,
+  wx_mp_secret TEXT,
+  wx_qr_appid TEXT,
+  wx_qr_secret TEXT,
+  updated_at TEXT
+);
+`;
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS teams (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  code TEXT NOT NULL UNIQUE,
+  owner_id TEXT,
+  allow_direct INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS team_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER NOT NULL,
+  profile_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  message TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  decided_at TEXT,
+  decided_by TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS team_req_key ON team_requests (team_id, profile_id);
+CREATE INDEX IF NOT EXISTS team_req_status_idx ON team_requests (status);
+
+CREATE TABLE IF NOT EXISTS wx_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app TEXT NOT NULL,
+  openid TEXT NOT NULL,
+  unionid TEXT,
+  profile_id TEXT NOT NULL,
+  nickname TEXT,
+  avatar TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS wx_app_openid_key ON wx_accounts (app, openid);
+CREATE INDEX IF NOT EXISTS wx_union_idx ON wx_accounts (unionid);
+CREATE INDEX IF NOT EXISTS wx_profile_idx ON wx_accounts (profile_id);
+
 CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -22,13 +91,21 @@ CREATE TABLE IF NOT EXISTS profiles (
   pin_hash TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   user_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  team_id INTEGER,
+  team_role TEXT NOT NULL DEFAULT 'member',
+  need_profile INTEGER NOT NULL DEFAULT 0,
+  avatar TEXT,
+  last_login_at TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS profiles_name_key ON profiles (lower(name));
+DROP INDEX IF EXISTS profiles_name_key;
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_team_name_key ON profiles (team_id, lower(name));
 CREATE INDEX IF NOT EXISTS profiles_user_idx ON profiles (user_id);
+CREATE INDEX IF NOT EXISTS profiles_team_idx ON profiles (team_id);
 
 CREATE TABLE IF NOT EXISTS projects (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
   name TEXT NOT NULL,
   address TEXT,
   color TEXT,
@@ -36,9 +113,11 @@ CREATE TABLE IF NOT EXISTS projects (
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id);
 
 CREATE TABLE IF NOT EXISTS appointments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
   owner_id TEXT,
   creator_name TEXT,
   project_id INTEGER,
@@ -61,9 +140,11 @@ CREATE TABLE IF NOT EXISTS appointments (
   updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS appt_date_idx ON appointments (visit_date);
+CREATE INDEX IF NOT EXISTS appt_team_idx ON appointments (team_id, visit_date);
 
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
   owner_id TEXT NOT NULL,
   appointment_id INTEGER,
   title TEXT NOT NULL,
@@ -72,29 +153,11 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS notif_owner_idx ON notifications (owner_id);
-
-CREATE TABLE IF NOT EXISTS settings (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  notify_enabled INTEGER NOT NULL DEFAULT 1,
-  pushplus_token TEXT,
-  email_enabled INTEGER NOT NULL DEFAULT 0,
-  emailjs_service_id TEXT,
-  emailjs_template_id TEXT,
-  emailjs_public_key TEXT,
-  digest_email TEXT,
-  last_digest_date TEXT,
-  mail_mode TEXT NOT NULL DEFAULT 'smtp',
-  smtp_host TEXT,
-  smtp_port INTEGER DEFAULT 465,
-  smtp_user TEXT,
-  smtp_pass TEXT,
-  smtp_from TEXT,
-  smtp_name TEXT,
-  updated_at TEXT
-);
+CREATE INDEX IF NOT EXISTS notif_team_idx ON notifications (team_id);
 
 CREATE TABLE IF NOT EXISTS email_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
   owner_id TEXT,
   kind TEXT,
   to_email TEXT,
@@ -103,46 +166,99 @@ CREATE TABLE IF NOT EXISTS email_logs (
   detail TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+CREATE INDEX IF NOT EXISTS email_logs_team_idx ON email_logs (team_id);
+
+CREATE TABLE IF NOT EXISTS time_off (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
+  profile_id TEXT NOT NULL,
+  off_date TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS time_off_key ON time_off (team_id, profile_id, off_date);
+CREATE INDEX IF NOT EXISTS time_off_date_idx ON time_off (team_id, off_date);
 `;
 
 const TABLES = {
   profiles: {
-    cols: ['id', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id', 'created_at'],
-    bool: ['active']
+    cols: ['id', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id',
+      'created_at', 'team_id', 'team_role', 'need_profile', 'avatar', 'last_login_at'],
+    bool: ['active', 'need_profile'],
+    num: ['team_id']
   },
   projects: {
-    cols: ['id', 'name', 'address', 'color', 'active', 'sort_order', 'created_at'],
-    bool: ['active']
+    cols: ['id', 'team_id', 'name', 'address', 'color', 'active', 'sort_order', 'created_at'],
+    bool: ['active'],
+    num: ['id', 'team_id']
   },
   appointments: {
-    cols: ['id', 'owner_id', 'creator_name', 'project_id', 'project_name', 'tech_id', 'tech_name', 'visit_date',
-      'time_slot', 'address', 'content', 'contact_name', 'contact_phone', 'contact_email', 'status', 'priority',
-      'note', 'reminded_at', 'mailed_at', 'created_at', 'updated_at'],
+    cols: ['id', 'team_id', 'owner_id', 'creator_name', 'project_id', 'project_name', 'tech_id', 'tech_name',
+      'visit_date', 'time_slot', 'address', 'content', 'contact_name', 'contact_phone', 'contact_email', 'status',
+      'priority', 'note', 'reminded_at', 'mailed_at', 'created_at', 'updated_at'],
     bool: [],
-    num: ['id', 'project_id']
+    num: ['id', 'project_id', 'team_id']
   },
   notifications: {
-    cols: ['id', 'owner_id', 'appointment_id', 'title', 'body', 'read_at', 'created_at'],
+    cols: ['id', 'team_id', 'owner_id', 'appointment_id', 'title', 'body', 'read_at', 'created_at'],
     bool: [],
-    num: ['id', 'appointment_id']
+    num: ['id', 'appointment_id', 'team_id']
   },
   settings: {
-    cols: ['id', 'notify_enabled', 'pushplus_token', 'email_enabled', 'emailjs_service_id', 'emailjs_template_id',
-      'emailjs_public_key', 'digest_email', 'last_digest_date', 'mail_mode', 'smtp_host', 'smtp_port', 'smtp_user',
-      'smtp_pass', 'smtp_from', 'smtp_name', 'updated_at'],
+    cols: ['id', 'team_id', 'notify_enabled', 'pushplus_token', 'email_enabled', 'emailjs_service_id',
+      'emailjs_template_id', 'emailjs_public_key', 'digest_email', 'last_digest_date', 'mail_mode', 'smtp_host',
+      'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_name', 'wx_mp_appid', 'wx_mp_secret',
+      'wx_qr_appid', 'wx_qr_secret', 'updated_at'],
     bool: ['notify_enabled', 'email_enabled'],
-    num: ['id', 'smtp_port']
+    num: ['id', 'smtp_port', 'team_id']
   },
   email_logs: {
-    cols: ['id', 'owner_id', 'kind', 'to_email', 'subject', 'status', 'detail', 'created_at'],
+    cols: ['id', 'team_id', 'owner_id', 'kind', 'to_email', 'subject', 'status', 'detail', 'created_at'],
     bool: [],
-    num: ['id']
+    num: ['id', 'team_id']
+  },
+  time_off: {
+    cols: ['id', 'team_id', 'profile_id', 'off_date', 'reason', 'created_at'],
+    bool: [],
+    num: ['id', 'team_id']
   }
 };
 
+/** 这些表一律按团队隔离 */
+const SCOPED = ['profiles', 'projects', 'appointments', 'notifications', 'settings', 'email_logs', 'time_off'];
+
+/** 只允许团队 API 改的字段：防止有人用 /api/db 给自己换团队或提权 */
+const TEAM_LOCKED_COLS = ['team_id', 'team_role'];
+
 let db = null;
 
-/* 老库迁移：settings 后续新增的列在这里补齐，老数据不动 */
+/* ---------- 团队码：3 位大写字母 + 6 位数字 ---------- */
+const CODE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // 去掉 I、O，避免和 1、0 看错
+function genTeamCode() {
+  let out = '';
+  for (let i = 0; i < 3; i++) out += CODE_LETTERS[crypto.randomInt(0, CODE_LETTERS.length)];
+  for (let i = 0; i < 6; i++) out += String(crypto.randomInt(0, 10));
+  return out;
+}
+const CODE_RE = /^[A-Z]{3}\d{6}$/;
+/** 用户输入容错：空格/横线/小写都能补正 */
+const normCode = v => String(v === null || v === undefined ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+/* ---------- 手机号：中国大陆 11 位 ---------- */
+function normPhone(v) {
+  const raw = String(v === null || v === undefined ? '' : v).trim();
+  if (!raw) return '';
+  return raw.replace(/[\s\-()]/g, '').replace(/^\+?86(?=1\d{10}$)/, '');
+}
+const PHONE_RE = /^1[3-9]\d{9}$/;
+function phoneError(v) {
+  const p = normPhone(v);
+  if (!p) return '请填写手机号';
+  if (!PHONE_RE.test(p)) return '手机号要 11 位，以 1 开头（现在填的是 ' + p.length + ' 位）';
+  return '';
+}
+
+/* ---------- 建库 / 迁移 ---------- */
 const SETTINGS_MIGRATIONS = [
   ['mail_mode', "TEXT NOT NULL DEFAULT 'smtp'"],
   ['smtp_host', 'TEXT'],
@@ -150,52 +266,168 @@ const SETTINGS_MIGRATIONS = [
   ['smtp_user', 'TEXT'],
   ['smtp_pass', 'TEXT'],
   ['smtp_from', 'TEXT'],
-  ['smtp_name', 'TEXT']
+  ['smtp_name', 'TEXT'],
+  ['wx_mp_appid', 'TEXT'],
+  ['wx_mp_secret', 'TEXT'],
+  ['wx_qr_appid', 'TEXT'],
+  ['wx_qr_secret', 'TEXT']
 ];
 
-function migrate() {
-  const cols = db.prepare('PRAGMA table_info(settings)').all().map(c => c.name);
-  for (const [name, type] of SETTINGS_MIGRATIONS) {
-    if (!cols.includes(name)) db.exec('ALTER TABLE settings ADD COLUMN ' + name + ' ' + type);
+const PROFILE_MIGRATIONS = [
+  ['team_id', 'INTEGER'],
+  ['team_role', "TEXT NOT NULL DEFAULT 'member'"],
+  ['need_profile', 'INTEGER NOT NULL DEFAULT 0'],
+  ['avatar', 'TEXT'],
+  ['last_login_at', 'TEXT']
+];
+
+const colsOf = table => db.prepare('PRAGMA table_info(' + table + ')').all().map(c => c.name);
+
+/** 老库 settings 是 id=1 单行 + CHECK(id=1)，团队化必须重建表 */
+function rebuildSettings() {
+  const old = db.prepare('SELECT * FROM settings LIMIT 1').get() || {};
+  db.exec('ALTER TABLE settings RENAME TO settings_legacy');
+  db.exec(SETTINGS_DDL);
+  const target = colsOf('settings');
+  const keys = Object.keys(old).filter(k => k !== 'id' && target.includes(k));
+  if (keys.length) {
+    db.prepare('INSERT INTO settings (' + keys.join(',') + ') VALUES (' + keys.map(() => '?').join(',') + ')')
+      .run(...keys.map(k => old[k]));
   }
+  db.exec('DROP TABLE settings_legacy');
+}
+
+function migrate() {
+  const hasSettings = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'").get();
+  if (!hasSettings) {
+    db.exec(SETTINGS_DDL);
+  } else {
+    const ddl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='settings'").get();
+    const sql = (ddl && ddl.sql) || '';
+    if (!/team_id/.test(sql) || /CHECK\s*\(\s*id\s*=\s*1\s*\)/i.test(sql)) rebuildSettings();
+    else {
+      const cols = colsOf('settings');
+      for (const [name, type] of SETTINGS_MIGRATIONS) {
+        if (!cols.includes(name)) db.exec('ALTER TABLE settings ADD COLUMN ' + name + ' ' + type);
+      }
+    }
+  }
+
+  // 业务表补 team_id
+  for (const t of ['profiles', 'projects', 'appointments', 'notifications', 'email_logs']) {
+    if (!colsOf(t).includes('team_id')) db.exec('ALTER TABLE ' + t + ' ADD COLUMN team_id INTEGER');
+  }
+  // 老 profiles 补团队/资料相关列
+  const pcols = colsOf('profiles');
+  for (const [name, type] of PROFILE_MIGRATIONS) {
+    if (!pcols.includes(name)) db.exec('ALTER TABLE profiles ADD COLUMN ' + name + ' ' + type);
+  }
+  // 同名唯一索引改成「团队内唯一」：不同团队可以有同名的人
+  try { db.exec('DROP INDEX IF EXISTS profiles_name_key'); } catch (e) { /* ignore */ }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS profiles_team_name_key ON profiles (team_id, lower(name))');
+}
+
+/**
+ * 老库升级：已经有数据但还没团队 → 建一个默认团队，把所有人/数据归进去。
+ * 第一个 admin 当队长（owner），其余 admin 保持管理员。
+ */
+function ensureDefaultTeam() {
+  const n = Number(db.prepare('SELECT COUNT(*) AS n FROM teams').get().n);
+  if (n > 0) return null;
+  const first = db.prepare('SELECT * FROM profiles ORDER BY created_at, rowid LIMIT 1').get();
+  if (!first) return null;
+
+  const admin = db.prepare("SELECT * FROM profiles WHERE role = 'admin' ORDER BY rowid LIMIT 1").get();
+  const owner = admin || first;
+  const teamName = (owner.name || '默认') + '的团队';
+  const code = newTeamCode();
+  const info = db.prepare('INSERT INTO teams (name, code, owner_id) VALUES (?,?,?)').run(teamName, code, owner.id);
+  const teamId = Number(info.lastInsertRowid);
+
+  db.exec('BEGIN');
+  try {
+    db.prepare("UPDATE profiles SET team_id = ?, team_role = CASE WHEN id = ? THEN 'owner' ELSE 'admin' END WHERE team_id IS NULL")
+      .run(teamId, owner.id);
+    for (const t of ['projects', 'appointments', 'notifications', 'email_logs']) {
+      if (t === 'projects' || t === 'appointments') {
+        db.prepare('UPDATE ' + t + ' SET team_id = ? WHERE team_id IS NULL').run(teamId);
+      }
+    }
+    db.prepare('UPDATE settings SET team_id = ? WHERE team_id IS NULL').run(teamId);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+  ensureTeamSettings(teamId);
+  return { id: teamId, name: teamName, code, owner: owner.id };
+}
+
+function newTeamCode() {
+  for (let i = 0; i < 40; i++) {
+    const code = genTeamCode();
+    const hit = db.prepare('SELECT id FROM teams WHERE code = ?').get(code);
+    if (!hit) return code;
+  }
+  throw new Error('团队码生成失败，请重试');
+}
+
+/** 每个团队一行 settings，缺了就补 */
+function ensureTeamSettings(teamId) {
+  if (!teamId) return null;
+  const row = db.prepare('SELECT * FROM settings WHERE team_id = ?').get(teamId);
+  if (row) return row;
+  db.prepare('INSERT INTO settings (team_id) VALUES (?)').run(teamId);
+  return db.prepare('SELECT * FROM settings WHERE team_id = ?').get(teamId);
 }
 
 function open() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   db = new DatabaseSync(DB_FILE);
   db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
+  db.exec('PRAGMA foreign_keys = OFF');
   db.exec(SCHEMA);
-  db.prepare('INSERT OR IGNORE INTO settings (id) VALUES (1)').run();
   migrate();
+  ensureDefaultTeam();
   return db;
 }
 
 const handle = () => (db || open());
 
 /* ---------- 结果规范化：把 0/1 变成布尔，把 id 变成数字 ---------- */
+const SECRET_COLS = { settings: ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret'] };
+
 function shape(table, row) {
   if (!row) return row;
   const meta = TABLES[table] || {};
   const bools = meta.bool || [];
   const nums = meta.num || [];
+  const secrets = SECRET_COLS[table] || [];
   const out = {};
   for (const k of Object.keys(row)) {
     if (k === 'pin_hash') continue; // 任何情况下都不对外回传
-    if (table === 'settings' && k === 'smtp_pass') continue; // 授权码只进不出
+    if (secrets.includes(k)) continue; // 授权码/密钥只进不出
     let v = row[k];
     if (bools.includes(k)) v = v === 1 || v === true;
     else if (nums.includes(k) && v !== null) v = Number(v);
     out[k] = v;
   }
-  // 前端只需要知道「授权码是否已保存」，不需要看到明文
-  if (table === 'settings') out.smtp_pass_set = !!row.smtp_pass;
+  if (table === 'settings') {
+    out.smtp_pass_set = !!row.smtp_pass;
+    out.wx_mp_secret_set = !!row.wx_mp_secret;
+    out.wx_qr_secret_set = !!row.wx_qr_secret;
+  }
   return out;
 }
 
 function bad(msg) {
   const e = new Error(msg);
   e.status = 400;
+  return e;
+}
+function deny(msg) {
+  const e = new Error(msg || '没有权限');
+  e.status = 403;
   return e;
 }
 
@@ -207,6 +439,7 @@ function pick(table, values) {
   for (const k of Object.keys(values || {})) {
     if (k === 'pin') continue;
     if (!meta.cols.includes(k)) continue;
+    if (TEAM_LOCKED_COLS.includes(k)) continue; // 团队归属/团队角色只能走团队接口
     let v = values[k];
     if (v === undefined) v = null;
     // node:sqlite 只接受 string / number / null / Buffer
@@ -257,30 +490,38 @@ function buildOrder(orders) {
 /* ---------- 权限：这里取代了云端的 RLS ---------- */
 const ADMIN_ONLY_WRITE = ['projects', 'settings'];
 
-function deny(msg) {
-  const e = new Error(msg || '没有权限');
-  e.status = 403;
-  return e;
+function isTeamAdmin(actor) {
+  return !!actor && (actor.teamRole === 'owner' || actor.teamRole === 'admin');
 }
+const isOwner = actor => !!actor && actor.teamRole === 'owner';
 
 function assertCan(actor, table, action, payload, filters) {
   if (!actor) throw deny('请先登录');
-  const isAdmin = actor.role === 'admin';
+  const admin = isTeamAdmin(actor);
 
   if (action === 'select') return;
 
   if (table === 'appointments') {
-    if (action === 'delete' && !isAdmin) {
-      const row = filters && filters.find(f => f.col === 'id');
-      const target = row ? handle().prepare('SELECT owner_id FROM appointments WHERE id = ?').get(row.val) : null;
-      if (!target || target.owner_id !== actor.id) throw deny('只有创建人或统筹能删除这条预约');
+    if (action === 'delete' && !admin) {
+      const row = (filters || []).find(f => f.col === 'id');
+      const target = row ? handle().prepare('SELECT owner_id, team_id FROM appointments WHERE id = ?').get(row.val) : null;
+      if (!target || target.team_id !== actor.teamId || target.owner_id !== actor.id) {
+        throw deny('只有创建人或团队管理员能删除这条预约');
+      }
     }
     return;
   }
 
-  if (table === 'notifications') {
+  if (table === 'notifications') return; // 服务端按 team + owner 过滤
+
+  if (table === 'time_off') {
+    if (admin) return;
+    // 普通成员只能给自己排休，也只能删自己的
     if (action === 'insert') return;
-    return; // 只在 UI 里改自己那几条，服务端按 owner 过滤
+    const row = (filters || []).find(f => f.col === 'id');
+    const target = row ? handle().prepare('SELECT profile_id FROM time_off WHERE id = ?').get(row.val) : null;
+    if (!target || target.profile_id !== actor.id) throw deny('只能调整自己的休息日');
+    return;
   }
 
   if (table === 'email_logs') {
@@ -289,26 +530,42 @@ function assertCan(actor, table, action, payload, filters) {
   }
 
   if (table === 'profiles') {
-    if (isAdmin) return;
+    if (admin) {
+      if (action === 'delete') {
+        const row = (filters || []).find(f => f.col === 'id');
+        const target = row ? handle().prepare('SELECT id, team_role FROM profiles WHERE id = ?').get(row.val) : null;
+        if (target && target.team_role === 'owner') throw deny('不能删除团队统筹（队长）');
+        if (target && target.team_role === 'admin' && !isOwner(actor)) throw deny('只有队长能移除其他管理员');
+      }
+      return;
+    }
     if (action === 'update') {
       const idFilter = (filters || []).find(f => f.col === 'id' || f.col === 'user_id');
       const targetId = idFilter ? String(idFilter.val) : null;
       if (targetId && targetId !== actor.id) throw deny('只能修改自己的资料');
-      const allowed = ['name', 'phone', 'email', 'color', 'pin'];
+      const allowed = ['name', 'phone', 'email', 'color', 'pin', 'avatar'];
       for (const k of Object.keys(payload || {})) {
-        if (!allowed.includes(k)) throw deny('这项资料只能由统筹修改');
+        if (!allowed.includes(k)) throw deny('这项资料只能由团队管理员修改');
       }
       return;
     }
-    throw deny('只有统筹管理员能维护人员名单');
+    throw deny('只有团队管理员能维护人员名单');
   }
 
   if (ADMIN_ONLY_WRITE.includes(table)) {
-    if (!isAdmin) throw deny('只有统筹管理员能改' + (table === 'projects' ? '项目' : '通知设置'));
+    if (!admin) throw deny('只有团队管理员能改' + (table === 'projects' ? '项目' : '通知设置'));
     return;
   }
 
-  if (!isAdmin && action !== 'insert') throw deny();
+  if (!admin && action !== 'insert') throw deny();
+}
+
+/** 把前端传的过滤条件改成「当前团队」范围：前端传别的团队也没用 */
+function scopeFilters(actor, table, filters) {
+  if (!SCOPED.includes(table)) return filters || [];
+  const out = (filters || []).filter(f => f && f.col !== 'team_id');
+  out.push({ op: 'eq', col: 'team_id', val: actor.teamId });
+  return out;
 }
 
 /* ---------- 执行 ---------- */
@@ -316,9 +573,10 @@ function run(actor, q) {
   const h = handle();
   const table = String(q.table || '');
   if (!TABLES[table]) throw bad('未知数据表：' + table);
+  if (!actor || !actor.teamId) throw deny('请先加入团队后再操作');
   const action = q.action || 'select';
-  const filters = q.filters || [];
-  assertCan(actor, table, action, q.values, filters);
+  assertCan(actor, table, action, q.values, q.filters);
+  const filters = scopeFilters(actor, table, q.filters);
 
   if (action === 'select') {
     const cols = q.columns && q.columns !== '*' && /^[a-z_,\s]+$/.test(q.columns) ? q.columns : '*';
@@ -338,15 +596,19 @@ function run(actor, q) {
     const out = [];
     for (const raw of list) {
       const values = pick(table, raw);
+      values.team_id = actor.teamId;
       if (table === 'profiles') {
         if (values.pin_hash === undefined) values.pin_hash = null;
         if (!values.id) values.id = 'p_' + Math.random().toString(36).slice(2, 10);
         if (!values.user_id) values.user_id = values.id;
         if (values.active === undefined) values.active = 1;
+        if (!values.team_role) values.team_role = 'member';
+        if (values.need_profile === undefined) values.need_profile = 0;
       }
       if (table === 'appointments' && !values.owner_id) values.owner_id = actor.id;
       if (table === 'notifications') values.owner_id = values.owner_id || actor.id;
       if (table === 'email_logs') values.owner_id = values.owner_id || actor.id;
+      if (table === 'time_off' && !isTeamAdmin(actor)) values.profile_id = actor.id;
       const cols = Object.keys(values);
       const sql = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`;
       const info = h.prepare(sql).run(...cols.map(c => values[c]));
@@ -358,6 +620,8 @@ function run(actor, q) {
   }
 
   if (action === 'update') {
+    // 不允许「无条件更新全表」；settings 一个团队只有一行，是唯一例外
+    if (!(q.filters || []).length && table !== 'settings') throw bad('拒绝无条件更新');
     const values = pick(table, q.values || {});
     if (!Object.keys(values).length) return { data: [] };
     const where = buildWhere(filters);
@@ -368,8 +632,9 @@ function run(actor, q) {
   }
 
   if (action === 'delete') {
+    // 团队过滤是后加的，这里必须看前端原本有没有带条件
+    if (!(q.filters || []).length) throw bad('拒绝无条件删除');
     const where = buildWhere(filters);
-    if (!where.sql) throw bad('拒绝无条件删除');
     const rows = h.prepare(`SELECT * FROM ${table}${where.sql}`).all(...where.params);
     h.prepare(`DELETE FROM ${table}${where.sql}`).run(...where.params);
     return { data: rows.map(r => shape(table, r)) };
@@ -378,7 +643,67 @@ function run(actor, q) {
   throw bad('不支持的操作：' + action);
 }
 
-/* ---------- 给定时任务用的直接访问 ---------- */
+/* ---------- 备份 / 恢复 ---------- */
+function stamp() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+}
+
+/** 整库快照（含所有团队）。用 VACUUM INTO，WAL 下也是安全的 */
+function snapshot() {
+  fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  // 同一秒多次备份会撞名，而 VACUUM INTO 要求目标文件不存在
+  let dest = '';
+  for (let i = 0; i < 20; i++) {
+    dest = path.join(BACKUP_DIR, 'crewgo-' + stamp() + '-' + crypto.randomBytes(3).toString('hex') + '.db');
+    if (!fs.existsSync(dest)) break;
+  }
+  handle().exec("VACUUM INTO '" + dest.replace(/'/g, "''") + "'");
+  return dest;
+}
+
+/** 用上传的 .db 替换当前库。自动先备份，失败不动原库 */
+function replaceDatabase(buf) {
+  if (!buf || buf.length < 1024) throw bad('文件太小，不像是数据库文件');
+  if (String(buf.slice(0, 16)) !== 'SQLite format 3\u0000') throw bad('这不是 SQLite 数据库文件（.db / .sqlite）');
+
+  const tmp = DB_FILE + '.importing';
+  fs.writeFileSync(tmp, buf);
+  let tables = [];
+  try {
+    const probe = new DatabaseSync(tmp);
+    tables = probe.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name);
+    probe.close();
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (err) { /* ignore */ }
+    throw bad('数据库文件损坏，无法读取：' + e.message);
+  }
+  if (!tables.includes('profiles') || !tables.includes('appointments')) {
+    try { fs.unlinkSync(tmp); } catch (e) { /* ignore */ }
+    throw bad('这个数据库不是速派导出的（缺少 profiles / appointments 表）');
+  }
+
+  let keep;
+  try {
+    keep = snapshot(); // 万一导入后不满意，还能退回去
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (err) { /* ignore */ }
+    throw bad('导入前的自动备份失败，已取消：' + e.message);
+  }
+  try { handle().close(); } catch (e) { /* ignore */ }
+  for (const f of [DB_FILE + '-wal', DB_FILE + '-shm']) { try { fs.unlinkSync(f); } catch (e) { /* ignore */ } }
+  fs.renameSync(tmp, DB_FILE);
+  open(); // 重新打开并把老结构迁移到新版本
+  return { tables: tables.length, backup: keep };
+}
+
+/** 给定时任务 / 团队接口用的直接访问（不做团队过滤，调用方自己负责） */
 function raw() { return handle(); }
 
-module.exports = { open, run, raw, DATA_DIR, DB_FILE, TABLES };
+module.exports = {
+  open, run, raw, snapshot, replaceDatabase, shape, bad, deny,
+  DATA_DIR, DB_FILE, BACKUP_DIR, TABLES, SCOPED,
+  genTeamCode, newTeamCode, normCode, CODE_RE, ensureTeamSettings,
+  normPhone, phoneError, PHONE_RE, isTeamAdmin, isOwner
+};

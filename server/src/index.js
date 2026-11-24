@@ -11,6 +11,10 @@ const path = require('node:path');
 const store = require('./store');
 const auth = require('./auth');
 const jobs = require('./jobs');
+const team = require('./team');
+const wechat = require('./wechat');
+const backup = require('./backup');
+const schedule = require('./schedule');
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -50,7 +54,22 @@ function pinError(pin) {
 
 function send(res, code, payload) {
   const buf = Buffer.from(JSON.stringify(payload));
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': buf.length, 'Cache-Control': 'no-store' });
+  res.writeHead(code, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': buf.length,
+    'Cache-Control': 'no-store'
+  });
+  res.end(buf);
+}
+
+function sendFile(res, code, buf, type, filename) {
+  const head = {
+    'Content-Type': type || 'application/octet-stream',
+    'Content-Length': buf.length,
+    'Cache-Control': 'no-store'
+  };
+  if (filename) head['Content-Disposition'] = "attachment; filename*=UTF-8''" + encodeURIComponent(filename);
+  res.writeHead(code, head);
   res.end(buf);
 }
 
@@ -68,6 +87,21 @@ function readBody(req) {
       try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
       catch (e) { reject(new Error('请求体不是合法 JSON')); }
     });
+    req.on('error', reject);
+  });
+}
+
+function readRaw(req, limit) {
+  const max = limit || 64 * 1024 * 1024;
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', c => {
+      size += c.length;
+      if (size > max) { reject(new Error('文件太大，单次最多 64MB')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
     req.on('error', reject);
   });
 }
@@ -94,14 +128,65 @@ function actorFrom(req) {
   if (!payload) return null;
   const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(payload.pid);
   if (!row || row.active === 0) return null;
-  return { id: row.id, name: row.name, role: row.role };
+  return {
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    teamId: row.team_id ? Number(row.team_id) : null,
+    teamRole: row.team_role || 'member',
+    needProfile: row.need_profile === 1
+  };
 }
 
-const publicProfile = row => ({ id: row.id, name: row.name, role: row.role, email: row.email, phone: row.phone });
+const wxBound = id => !!store.raw().prepare('SELECT 1 AS x FROM wx_accounts WHERE profile_id = ? LIMIT 1').get(id);
+
+const publicProfile = row => ({
+  id: row.id,
+  name: row.name,
+  role: row.role,
+  email: row.email,
+  phone: row.phone,
+  color: row.color,
+  avatar: row.avatar || null,
+  team_id: row.team_id ? Number(row.team_id) : null,
+  team_role: row.team_role || 'member',
+  need_profile: row.need_profile === 1,
+  wx_bound: wxBound(row.id)
+});
+
+/** 微信配置存在 team_id 为 NULL 的全局 settings 行里 */
+function globalSettings() {
+  const row = store.raw().prepare('SELECT * FROM settings WHERE team_id IS NULL ORDER BY id LIMIT 1').get();
+  if (row) return row;
+  try {
+    store.raw().prepare('INSERT INTO settings (team_id) VALUES (NULL)').run();
+  } catch (e) { /* 已有全局行 */ }
+  return store.raw().prepare('SELECT * FROM settings WHERE team_id IS NULL ORDER BY id LIMIT 1').get() || {};
+}
+
+/** 从请求头还原对外的站点地址（反代后也能拿到 https + 真实域名） */
+function baseUrl(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() || 'http';
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  return proto + '://' + host;
+}
+const redirectUri = req => baseUrl(req).replace(/\/+$/, '') + '/api/auth/wechat/callback';
+
+/** 一次性 ticket → token（微信授权回来时用，避免 token 出现在地址栏） */
+function sessionOf(row) {
+  const t = team.teamById(row.team_id);
+  return {
+    token: auth.issue(row),
+    user: publicProfile(row),
+    team: team.publicTeam(t),
+    pending: row.team_id ? null : team.myRequest(row.id)
+  };
+}
 
 /* ---------- 路由 ---------- */
-async function handleApi(req, res, pathname) {
+async function handleApi(req, res, pathname, url) {
   const ip = req.socket.remoteAddress || 'unknown';
+  const gs = () => globalSettings();
 
   if (pathname === '/api/health') {
     return send(res, 200, { ok: true, version: VERSION, time: new Date().toISOString() });
@@ -109,25 +194,59 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/auth/status') {
     const row = store.raw().prepare('SELECT COUNT(*) AS n FROM profiles').get();
-    return send(res, 200, { initialized: Number(row.n) > 0 });
+    return send(res, 200, { initialized: Number(row.n) > 0, wechat: wechat.publicCfg(gs()), version: VERSION });
   }
 
+  /* 首次初始化：建账号 + 建团队（创建人 = 团队统筹） */
   if (pathname === '/api/auth/setup' && req.method === 'POST') {
     const row = store.raw().prepare('SELECT COUNT(*) AS n FROM profiles').get();
-    if (Number(row.n) > 0) return fail(res, 409, '系统已经初始化过了，请直接用姓名和 PIN 登录');
+    if (Number(row.n) > 0) return fail(res, 409, '系统已经初始化过了，请直接登录，或用团队码加入');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
     const pin = normPin(body.pin);
     if (!name) return fail(res, 400, '请填写姓名');
     const pe = pinError(pin);
     if (pe) return fail(res, 400, pe);
+    const phoneRaw = String(body.phone || '').trim();
+    if (phoneRaw) {
+      const phe = store.phoneError(phoneRaw);
+      if (phe) return fail(res, 400, phe);
+    }
     const id = 'p_' + Math.random().toString(36).slice(2, 10);
     store.raw().prepare(
       "INSERT INTO profiles (id, name, phone, role, color, pin_hash, active, user_id) VALUES (?,?,?,?,?,?,1,?)"
-    ).run(id, name, String(body.phone || '').trim() || null, 'admin', '#2b6ef6', auth.hashPin(pin), id);
+    ).run(id, name, phoneRaw ? store.normPhone(phoneRaw) : null, 'admin', '#2b6ef6', auth.hashPin(pin), id);
     const prof = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
-    log('初始化完成，管理员：' + name);
-    return send(res, 200, { token: auth.issue(prof), user: publicProfile(prof) });
+    const created = team.createTeam(prof, String(body.teamName || '').trim() || (name + '的团队'));
+    log('初始化完成：' + name + '，团队「' + created.team.name + '」码 ' + created.code);
+    const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
+    return send(res, 200, sessionOf(fresh));
+  }
+
+  /* 自助注册：此时还看不到任何团队数据，要凭团队码申请并被同意 */
+  if (pathname === '/api/auth/register' && req.method === 'POST') {
+    if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
+    const body = await readBody(req);
+    const name = String(body.name || '').trim();
+    const pin = normPin(body.pin);
+    if (!name) return fail(res, 400, '请填写姓名');
+    if (name.length > 20) return fail(res, 400, '姓名最多 20 个字');
+    const pe = pinError(pin);
+    if (pe) return fail(res, 400, pe);
+    const phoneRaw = String(body.phone || '').trim();
+    if (phoneRaw) {
+      const phe = store.phoneError(phoneRaw);
+      if (phe) return fail(res, 400, phe);
+    }
+    const dup = store.raw().prepare('SELECT id FROM profiles WHERE team_id IS NULL AND lower(name) = lower(?)').get(name);
+    if (dup) return fail(res, 409, '这个姓名已经有待加入的账号了，直接登录，或换个写法（如带上姓氏全名）');
+    const id = team.newProfileId();
+    store.raw().prepare(
+      "INSERT INTO profiles (id, name, phone, role, color, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,1,?,'member',0)"
+    ).run(id, name, phoneRaw ? store.normPhone(phoneRaw) : null, 'tech', '#2b6ef6', auth.hashPin(pin), id);
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
+    log('新账号注册（待加入团队）：' + name);
+    return send(res, 200, Object.assign(sessionOf(row), { registered: true }));
   }
 
   if (pathname === '/api/auth/login' && req.method === 'POST') {
@@ -136,21 +255,56 @@ async function handleApi(req, res, pathname) {
     const name = String(body.name || '').trim();
     const pin = normPin(body.pin);
     if (!name || !pin) return fail(res, 400, '请输入姓名和 PIN');
-    const row = store.raw().prepare('SELECT * FROM profiles WHERE lower(name) = lower(?)').get(name);
-    if (!row || row.active === 0 || !auth.verifyPin(pin, row.pin_hash)) {
+    // 不同团队可能有同名的人，所以逐条验 PIN 找出正确的那一个
+    const rows = team.findByName(name);
+    const hit = rows.filter(r => auth.verifyPin(pin, r.pin_hash))[0];
+    if (!hit) {
       markFail(ip);
-      return fail(res, 401, '姓名或 PIN 不对。忘记 PIN 可让统筹在「设置 → 人员」里重设');
+      return fail(res, 401, '姓名或 PIN 不对。忘记 PIN 可让团队管理员在「设置 → 人员」里重设');
     }
     attempts.delete(ip);
-    if (!row.user_id) store.raw().prepare('UPDATE profiles SET user_id = id WHERE id = ?').run(row.id);
-    return send(res, 200, { token: auth.issue(row), user: publicProfile(row) });
+    const patch = ["last_login_at = datetime('now','localtime')"];
+    if (!hit.user_id) patch.push('user_id = id');
+    store.raw().prepare('UPDATE profiles SET ' + patch.join(', ') + ' WHERE id = ?').run(hit.id);
+    const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(hit.id);
+    return send(res, 200, sessionOf(fresh));
   }
 
   if (pathname === '/api/auth/me') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
-    return send(res, 200, { user: publicProfile(row) });
+    const t = team.teamById(row.team_id);
+    return send(res, 200, {
+      user: publicProfile(row),
+      team: t ? Object.assign(team.publicTeam(t), { stats: team.stats(t.id) }) : null,
+      pending: row.team_id ? null : team.myRequest(row.id),
+      wechat: wechat.publicCfg(gs())
+    });
+  }
+
+  /* 补全资料：微信注册的账号必须填姓名和手机号才能继续 */
+  if (pathname === '/api/auth/profile' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const name = String(body.name || '').trim();
+    const phone = String(body.phone || '').trim();
+    if (!name) return fail(res, 400, '请填写姓名');
+    if (name.length > 20) return fail(res, 400, '姓名最多 20 个字');
+    const phe = store.phoneError(phone);
+    if (phe) return fail(res, 400, phe);
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    // 团队内重名会让姓名登录变得歧义，这里挡一下
+    if (row.team_id) {
+      const dup = store.raw().prepare('SELECT id FROM profiles WHERE team_id = ? AND lower(name) = lower(?) AND id <> ?')
+        .get(row.team_id, name, row.id);
+      if (dup) return fail(res, 409, '团队里已经有同名的人了，加个区分（如「张工-水电」）');
+    }
+    store.raw().prepare('UPDATE profiles SET name = ?, phone = ?, need_profile = 0 WHERE id = ?')
+      .run(name, store.normPhone(phone), row.id);
+    const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(row.id);
+    return send(res, 200, sessionOf(fresh));
   }
 
   if (pathname === '/api/auth/pin' && req.method === 'POST') {
@@ -158,7 +312,7 @@ async function handleApi(req, res, pathname) {
     if (!actor) return fail(res, 401, '未登录');
     const body = await readBody(req);
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
-    if (!auth.verifyPin(normPin(body.oldPin), row.pin_hash)) return fail(res, 400, '原 PIN 不对');
+    if (row.pin_hash && !auth.verifyPin(normPin(body.oldPin), row.pin_hash)) return fail(res, 400, '原 PIN 不对');
     const newPin = normPin(body.newPin);
     const pe = pinError(newPin);
     if (pe) return fail(res, 400, pe);
@@ -167,17 +321,410 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, { ok: true });
   }
 
-  if (pathname === '/api/auth/logout') return send(res, 200, { ok: true });
+  /* ---------------- 微信登录 ---------------- */
+  if (pathname === '/api/auth/wechat/url') {
+    const mode = url.searchParams.get('mode') === 'mp' ? 'mp' : 'qr';
+    const cfg = wechat.cfgOf(gs())[mode];
+    if (!cfg.appid || !cfg.secret) {
+      return fail(res, 400, mode === 'mp'
+        ? '还没配置公众号登录：设置 → 登录方式，填公众号 AppID / AppSecret'
+        : '还没配置扫码登录：设置 → 登录方式，填开放平台网站应用 AppID / AppSecret');
+    }
+    const bind = url.searchParams.get('bind') === '1';
+    if (bind) {
+      const actor = actorFrom(req);
+      if (!actor) return fail(res, 401, '请先登录再绑定微信');
+    }
+    const actor = bind ? actorFrom(req) : null;
+    const state = wechat.makeState({ mode, app: mode, bind: bind, pid: actor ? actor.id : null, iat: Date.now() });
+    return send(res, 200, { url: wechat.buildUrl(mode, cfg.appid, redirectUri(req), state), mode });
+  }
 
+  if (pathname === '/api/auth/wechat/callback') {
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const st = wechat.readState(state);
+    const back = baseUrl(req) + '/';
+    if (!st) return redirect(res, back + '?wx_error=' + encodeURIComponent('登录状态已过期，请重新扫码'));
+    if (!code) return redirect(res, back + '?wx_error=' + encodeURIComponent('没有拿到微信授权码'));
+    const cfg = wechat.cfgOf(gs())[st.app] || {};
+    if (!cfg.appid || !cfg.secret) return redirect(res, back + '?wx_error=' + encodeURIComponent('微信登录未配置'));
+    let info;
+    try {
+      info = await wechat.exchange(st.app, cfg.appid, cfg.secret, code);
+    } catch (e) {
+      return redirect(res, back + '?wx_error=' + encodeURIComponent(e.message || '微信授权失败'));
+    }
+
+    let profile = null;
+    try {
+      if (st.bind) {
+        profile = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(st.pid);
+        if (!profile) throw new Error('账号不存在，请重新登录');
+        const other = store.raw().prepare('SELECT * FROM wx_accounts WHERE app = ? AND openid = ?').get(st.app, info.openid);
+        if (other && other.profile_id !== profile.id) throw new Error('这个微信已经绑定到别的账号了，请先用那个账号解绑');
+        store.raw().prepare('DELETE FROM wx_accounts WHERE app = ? AND openid = ?').run(st.app, info.openid);
+        store.raw().prepare('INSERT INTO wx_accounts (app, openid, unionid, profile_id, nickname, avatar) VALUES (?,?,?,?,?,?)')
+          .run(st.app, info.openid, info.unionid, profile.id, info.nickname, info.avatar);
+        if (info.avatar && !profile.avatar) {
+          store.raw().prepare('UPDATE profiles SET avatar = ? WHERE id = ?').run(info.avatar, profile.id);
+        }
+        const t = wechat.issueTicket({ pid: profile.id, bind: true });
+        return redirect(res, back + '?wx_bind=' + encodeURIComponent(t));
+      }
+
+      // 1) 先按 unionid 找（公众号和扫码两个 AppID 下的 openid 不同，unionid 相同）
+      let pid = null;
+      if (info.unionid) {
+        const hit = store.raw().prepare('SELECT profile_id FROM wx_accounts WHERE unionid = ? LIMIT 1').get(info.unionid);
+        if (hit) pid = hit.profile_id;
+      }
+      // 2) 再按 app + openid 找
+      if (!pid) {
+        const hit = store.raw().prepare('SELECT profile_id FROM wx_accounts WHERE app = ? AND openid = ?').get(st.app, info.openid);
+        if (hit) pid = hit.profile_id;
+      }
+      if (pid) {
+        profile = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(pid);
+      }
+      if (!profile) {
+        // 3) 第一次来：建一个「待完善」账号，登录后强制填姓名和手机号
+        const id = team.newProfileId();
+        const colors = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2'];
+        store.raw().prepare(
+          "INSERT INTO profiles (id, name, phone, role, color, avatar, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,1,?,'member',1)"
+        ).run(id, '', null, 'tech', colors[Math.floor(Math.random() * colors.length)], info.avatar || null, id);
+        profile = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
+        log('微信新用户：' + (info.nickname || info.openid) + '（待完善资料）');
+      }
+      // 补一条 openid 记录（同一微信换入口也能认回来）
+      const exists = store.raw().prepare('SELECT id FROM wx_accounts WHERE app = ? AND openid = ?').get(st.app, info.openid);
+      if (!exists) {
+        store.raw().prepare('INSERT INTO wx_accounts (app, openid, unionid, profile_id, nickname, avatar) VALUES (?,?,?,?,?,?)')
+          .run(st.app, info.openid, info.unionid, profile.id, info.nickname, info.avatar);
+      } else {
+        store.raw().prepare('UPDATE wx_accounts SET unionid = COALESCE(?, unionid), profile_id = ?, nickname = COALESCE(?, nickname) WHERE id = ?')
+          .run(info.unionid, profile.id, info.nickname, exists.id);
+      }
+      store.raw().prepare("UPDATE profiles SET last_login_at = datetime('now','localtime') WHERE id = ?").run(profile.id);
+      const ticket = wechat.issueTicket({ pid: profile.id });
+      return redirect(res, back + '?wx_ticket=' + encodeURIComponent(ticket));
+    } catch (e) {
+      return redirect(res, back + '?wx_error=' + encodeURIComponent(e.message || '微信登录失败'));
+    }
+  }
+
+  if (pathname === '/api/auth/wechat/ticket' && req.method === 'POST') {
+    const body = await readBody(req);
+    const t = wechat.consumeTicket(body.ticket);
+    if (!t) return fail(res, 400, '登录票据已过期，请重新扫码');
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(t.pid);
+    if (!row) return fail(res, 400, '账号不存在');
+    if (t.bind) return send(res, 200, { bind: true, user: publicProfile(row) });
+    return send(res, 200, sessionOf(row));
+  }
+
+  if (pathname === '/api/auth/wechat/unbind' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    store.raw().prepare('DELETE FROM wx_accounts WHERE profile_id = ?').run(actor.id);
+    return send(res, 200, { ok: true });
+  }
+
+  /* ---------------- 团队 ---------------- */
+  if (pathname === '/api/team' && req.method === 'GET') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const t = team.teamById(actor.teamId);
+    if (!t) {
+      const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+      return send(res, 200, { team: null, pending: team.myRequest(actor.id), need_profile: row.need_profile === 1 });
+    }
+    return send(res, 200, {
+      team: Object.assign(team.publicTeam(t), { stats: team.stats(t.id) }),
+      my_role: actor.teamRole
+    });
+  }
+
+  if (pathname === '/api/team/create' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    if (row.need_profile === 1) return fail(res, 400, '请先填写姓名和手机号');
+    const created = team.createTeam(row, body.name);
+    log('新团队：' + created.team.name + ' 码 ' + created.code + '（创建人 ' + row.name + '）');
+    const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    return send(res, 200, sessionOf(fresh));
+  }
+
+  if (pathname === '/api/team/join' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    if (row.need_profile === 1) return fail(res, 400, '请先填写姓名和手机号');
+    const r = team.joinByCode(row, body.code, body.message);
+    if (r.joined) {
+      const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+      return send(res, 200, Object.assign(sessionOf(fresh), { joined: true }));
+    }
+    return send(res, 200, { joined: false, pending: true, team: r.team });
+  }
+
+  if (pathname === '/api/team/cancel' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    team.cancelRequest(row);
+    return send(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/team/requests') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    return send(res, 200, { data: team.listRequests(actor) });
+  }
+
+  if (pathname === '/api/team/requests/decide' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const r = team.decide(actor, body.id, !!body.approve);
+    return send(res, 200, r);
+  }
+
+  if (pathname === '/api/team/members') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    return send(res, 200, { data: team.members(actor) });
+  }
+
+  if (pathname === '/api/team/members/role' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    return send(res, 200, team.setRole(actor, body.id, body.role));
+  }
+
+  if (pathname === '/api/team/members/remove' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    return send(res, 200, team.removeMember(actor, body.id));
+  }
+
+  if (pathname === '/api/team/leave' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    team.leave(actor);
+    return send(res, 200, { ok: true });
+  }
+
+  if (pathname === '/api/team/owner' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    return send(res, 200, team.transferOwner(actor, body.id));
+  }
+
+  if (pathname === '/api/team/rename' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    return send(res, 200, team.rename(actor, body.name));
+  }
+
+  if (pathname === '/api/team/allow-direct' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    return send(res, 200, team.setAllowDirect(actor, !!body.allow));
+  }
+
+  if (pathname === '/api/team/code/reset' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    return send(res, 200, team.resetCode(actor));
+  }
+
+  if (pathname === '/api/team/dissolve' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    return send(res, 200, team.dissolve(actor, body.name));
+  }
+
+  /* ---------------- 微信登录配置（全局，只存服务端） ---------------- */
+  if (pathname === '/api/settings/wechat' && req.method === 'GET') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能看');
+    const s = gs();
+    return send(res, 200, {
+      wx_mp_appid: s.wx_mp_appid || '',
+      wx_qr_appid: s.wx_qr_appid || '',
+      wx_mp_secret_set: !!s.wx_mp_secret,
+      wx_qr_secret_set: !!s.wx_qr_secret,
+      enabled: wechat.publicCfg(s),
+      callback: baseUrl(req) + '/api/auth/wechat/callback'
+    });
+  }
+
+  if (pathname === '/api/settings/wechat' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能改');
+    const body = await readBody(req);
+    const s = gs();
+    const patch = {
+      wx_mp_appid: String(body.wx_mp_appid || '').trim() || null,
+      wx_qr_appid: String(body.wx_qr_appid || '').trim() || null,
+      wx_mp_secret: String(body.wx_mp_secret || '').trim() || s.wx_mp_secret || null,
+      wx_qr_secret: String(body.wx_qr_secret || '').trim() || s.wx_qr_secret || null
+    };
+    store.raw().prepare('UPDATE settings SET wx_mp_appid = ?, wx_mp_secret = ?, wx_qr_appid = ?, wx_qr_secret = ? WHERE id = ?')
+      .run(patch.wx_mp_appid, patch.wx_mp_secret, patch.wx_qr_appid, patch.wx_qr_secret, s.id);
+    return send(res, 200, { ok: true, enabled: wechat.publicCfg(Object.assign({}, s, patch)) });
+  }
+
+  /* ---------------- 备份 / 导入 ---------------- */
+  if (pathname === '/api/backup/export') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能导出');
+    const fmt = url.searchParams.get('format') === 'db' ? 'db' : 'json';
+    if (fmt === 'db') {
+      if (!store.isOwner(actor)) return fail(res, 403, '整库文件包含所有团队的数据，只有团队统筹能下载');
+      const file = store.snapshot();
+      const buf = fs.readFileSync(file);
+      return sendFile(res, 200, buf, 'application/x-sqlite3', backup.exportFileName('db'));
+    }
+    const payload = backup.exportTeam(actor.teamId);
+    const buf = Buffer.from(JSON.stringify(payload, null, 2));
+    return sendFile(res, 200, buf, 'application/json; charset=utf-8', backup.exportFileName('json'));
+  }
+
+  if (pathname === '/api/backup/import' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能导入');
+    const filename = String(url.searchParams.get('filename') || 'upload');
+    const dry = url.searchParams.get('dry') === '1';
+
+    // JSON/表格走内存解析（64MB 上限），数据库文件同理
+    const buf = await readRaw(req, 64 * 1024 * 1024);
+    if (!buf.length) return fail(res, 400, '没有收到文件');
+
+    const isDb = /\.(db|sqlite|sqlite3)$/i.test(filename)
+      || (buf.length > 16 && String(buf.slice(0, 15)) === 'SQLite format 3');
+    if (isDb && !store.isOwner(actor)) return fail(res, 403, '恢复整库只有团队统筹能操作');
+
+    if (isDb) {
+      if (dry) return send(res, 200, { kind: 'db', size: buf.length, requiresOwner: true, dry: true });
+      const r = store.replaceDatabase(buf);
+      log('整库恢复完成（操作人 ' + actor.name + '，备份 ' + path.basename(r.backup) + '）');
+      return send(res, 200, { kind: 'db', restored: true, backup: path.basename(r.backup), relogin: true });
+    }
+    const report = backup.preview(actor, buf, filename, dry);
+    if (!dry) log('导入 ' + filename + '（' + actor.name + '）：' + String(JSON.stringify(report)).slice(0, 220));
+    return send(res, 200, report);
+  }
+
+  /* ---------------- 排期校验 / 休息日 ---------------- */
+  if (pathname === '/api/schedule/check' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
+    const body = await readBody(req);
+    const r = schedule.check(actor.teamId, {
+      date: body.date, slot: body.slot, tech_id: body.tech_id,
+      tech_name: body.tech_name, exclude_id: body.exclude_id
+    });
+    return send(res, 200, { conflicts: r.conflicts, off: r.off, tech: r.tech });
+  }
+
+  if (pathname === '/api/schedule/time-off' && req.method === 'GET') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    return send(res, 200, { data: schedule.listOff(actor.teamId, url.searchParams.get('from'), url.searchParams.get('to')) });
+  }
+
+  if (pathname === '/api/schedule/time-off' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
+    const body = await readBody(req);
+    const target = store.isTeamAdmin(actor) || !body.profile_id ? (body.profile_id || actor.id) : actor.id;
+    const r = schedule.addOff(actor.teamId, target, body.from, body.to, body.reason);
+    return send(res, 200, r);
+  }
+
+  if (pathname === '/api/schedule/time-off/remove' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    if (body.id) {
+      store.run(actor, { table: 'time_off', action: 'delete', filters: [{ op: 'eq', col: 'id', val: Number(body.id) }] });
+    } else if (body.profile_id && body.from) {
+      // 清掉某个区间的排休
+      const from = String(body.from).slice(0, 10);
+      const to = String(body.to || body.from).slice(0, 10);
+      const target = store.isTeamAdmin(actor) ? body.profile_id : actor.id;
+      store.raw().prepare('DELETE FROM time_off WHERE team_id = ? AND profile_id = ? AND off_date >= ? AND off_date <= ?')
+        .run(actor.teamId, String(target), from, to);
+    }
+    return send(res, 200, { ok: true });
+  }
+
+  /* ---------------- 数据接口 ---------------- */
   if (pathname === '/api/db' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
     if (body && body.values && body.values.pin != null && body.values.pin !== '') {
       const p = normPin(body.values.pin);
       const pe = pinError(p);
       if (pe) return fail(res, 400, pe);
       body.values.pin_hash = auth.hashPin(p);
+    }
+    if (body && body.values && body.values.phone) {
+      const phe = store.phoneError(body.values.phone);
+      if (phe) return fail(res, 400, phe);
+      body.values.phone = store.normPhone(body.values.phone);
+    }
+    // 写预约单前的排期体检：同一人同一时段不能被派两单，休息日不能派
+    const touchesSchedule = body && body.table === 'appointments'
+      && (body.action === 'insert' || (body.action === 'update' && body.values
+        && ['visit_date', 'time_slot', 'tech_id', 'tech_name'].some(k => k in body.values)));
+    if (touchesSchedule && !body.force) {
+      const vals = Array.isArray(body.values) ? (body.values[0] || {}) : (body.values || {});
+      let merged = vals;
+      if (body.action === 'update') {
+        const idf = (body.filters || []).find(f => f.col === 'id');
+        const cur = idf ? store.raw().prepare('SELECT * FROM appointments WHERE id = ? AND team_id = ?').get(idf.val, actor.teamId) : null;
+        if (cur) merged = Object.assign({}, cur, vals);
+      }
+      const chk = schedule.check(actor.teamId, {
+        date: merged.visit_date,
+        slot: merged.time_slot,
+        tech_id: merged.tech_id,
+        tech_name: merged.tech_name,
+        exclude_id: body.action === 'update' ? merged.id : 0
+      });
+      if (chk.tech && (chk.off || chk.conflicts.length)) {
+        const when = String(merged.visit_date || '').slice(5).replace('-', '月') + '日 ' + (merged.time_slot || '');
+        const msg = chk.off
+          ? chk.tech.name + ' 在 ' + when + ' 排了休息' + (chk.off.reason ? '（' + chk.off.reason + '）' : '') + '，不能安排预约'
+          : chk.tech.name + ' 在 ' + when + ' 已经有别的单了';
+        return send(res, 409, {
+          error: msg,
+          off: chk.off,
+          conflicts: chk.conflicts,
+          tech: chk.tech
+        });
+      }
     }
     const result = store.run(actor, body);
     return send(res, 200, result);
@@ -187,8 +734,9 @@ async function handleApi(req, res, pathname) {
   if (pathname === '/api/mail/send' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
-    const row = store.raw().prepare('SELECT * FROM settings WHERE id = 1').get() || {};
+    const row = store.ensureTeamSettings(actor.teamId) || {};
     const cfg = jobs.mailCfg(row);
     if (!jobs.mailReady(cfg)) {
       return fail(res, 400, cfg.mode === 'smtp' ? '邮件还没配好：需要邮箱地址 + 授权码' : 'EmailJS 三个参数没填全');
@@ -202,7 +750,8 @@ async function handleApi(req, res, pathname) {
       html: body.html || '',
       text: body.text || '',
       kind: body.kind || 'other',
-      owner: actor.id
+      owner: actor.id,
+      teamId: actor.teamId
     });
     if (!r.ok) return fail(res, 502, r.error || '发送失败');
     return send(res, 200, { ok: true, mode: cfg.mode });
@@ -210,20 +759,25 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/mail/digest' && req.method === 'POST') {
     const actor = actorFrom(req);
-    if (!actor || actor.role !== 'admin') return fail(res, 403, '只有统筹能发汇总');
-    const ok = await jobs.runDigest();
+    if (!actor || !store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能发汇总');
+    const ok = await jobs.runDigest(actor.teamId);
     return send(res, 200, { ok: !!ok });
   }
 
   if (pathname === '/api/jobs/run' && req.method === 'POST') {
     const actor = actorFrom(req);
-    if (!actor || actor.role !== 'admin') return fail(res, 403, '只有统筹能手动触发');
-    const n = await jobs.runReminders();
-    const d = await jobs.runDigest();
+    if (!actor || !store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能手动触发');
+    const n = await jobs.runReminders(actor.teamId);
+    const d = await jobs.runDigest(actor.teamId);
     return send(res, 200, { reminders: n, digest: d });
   }
 
   return fail(res, 404, '接口不存在：' + pathname);
+}
+
+function redirect(res, to) {
+  res.writeHead(302, { Location: to, 'Cache-Control': 'no-store' });
+  res.end();
 }
 
 function serveStatic(req, res, pathname) {
@@ -232,6 +786,13 @@ function serveStatic(req, res, pathname) {
   if (rel === '/' || rel === '') rel = '/index.html';
   // 只允许访问前端产物，服务端源码不对外
   if (rel.startsWith('/server/') || rel.startsWith('/.git') || rel.startsWith('/data/')) return fail(res, 404, 'Not found');
+
+  // 微信「网页授权域名」要验证站点归属：允许把 MP_verify_xxx.txt 丢进数据目录，
+  // 不用为了一个校验文件重新打镜像（放在 volumes 挂载的 /data 下就能直接被验证到）
+  if (/^\/MP_verify_[A-Za-z0-9]+\.txt$/.test(rel)) {
+    const vp = path.join(store.DATA_DIR, rel.slice(1));
+    if (fs.existsSync(vp)) return serveFile(req, res, vp);
+  }
 
   const file = path.normalize(path.join(ROOT, rel));
   if (!file.startsWith(ROOT)) return fail(res, 403, 'Forbidden');
@@ -280,9 +841,10 @@ const server = http.createServer((req, res) => {
   }
 
   if (pathname.startsWith('/api/')) {
-    handleApi(req, res, pathname).catch(err => {
+    handleApi(req, res, pathname, url).catch(err => {
       const code = err.status || 500;
       if (code >= 500) log('接口出错：' + (err.stack || err.message));
+      if (res.headersSent) return res.end();
       fail(res, code, err.message || '服务端出错');
     });
     return;
@@ -300,6 +862,10 @@ server.listen(PORT, HOST, () => {
     for (const ni of list || []) if (ni.family === 'IPv4' && !ni.internal) lan.push(ni.address);
   }
   if (lan.length) log('浏览器打开：' + lan.map(a => 'http://' + a + ':' + PORT + '/').join('  或  '));
+  const gs = store.raw().prepare('SELECT * FROM settings WHERE team_id IS NULL LIMIT 1').get();
+  if (gs && (gs.wx_mp_appid || gs.wx_qr_appid)) {
+    log('微信登录：' + (gs.wx_mp_appid ? '公众号已配置 ' : '') + (gs.wx_qr_appid ? '扫码已配置' : ''));
+  }
   jobs.start(log);
 });
 

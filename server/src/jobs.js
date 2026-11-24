@@ -22,7 +22,11 @@ const dayLabel = s => {
 const esc = v => String(v === null || v === undefined ? '' : v)
   .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const settings = () => raw().prepare('SELECT * FROM settings WHERE id = 1').get() || {};
+const settings = teamId => raw().prepare('SELECT * FROM settings WHERE team_id = ? ORDER BY id LIMIT 1').get(teamId) || {};
+/** 所有团队：定时任务要逐团队跑，谁也看不到别人的数据 */
+const teamsWithSettings = () => raw().prepare(
+  'SELECT t.id AS team_id, t.name AS team_name, s.* FROM teams t LEFT JOIN settings s ON s.team_id = t.id ORDER BY t.id'
+).all();
 const isEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v || '').trim());
 
 function apptText(a) {
@@ -115,8 +119,8 @@ async function sendMail(cfg, opt) {
     detail = String((e && e.message) || e).slice(0, 400);
   }
   try {
-    raw().prepare('INSERT INTO email_logs (owner_id, kind, to_email, subject, status, detail) VALUES (?,?,?,?,?,?)')
-      .run(opt.owner || 'system', opt.kind || 'other', opt.to, opt.subject || '', status, detail || null);
+    raw().prepare('INSERT INTO email_logs (team_id, owner_id, kind, to_email, subject, status, detail) VALUES (?,?,?,?,?,?,?)')
+      .run(opt.teamId || null, opt.owner || 'system', opt.kind || 'other', opt.to, opt.subject || '', status, detail || null);
   } catch (e) { /* ignore */ }
   return status === 'sent' ? { ok: true } : { ok: false, error: detail };
 }
@@ -149,16 +153,21 @@ const mailReady = c => (c && c.mode === 'smtp'
   : !!(c && c.service && c.template && c.key));
 
 /* ---------- 出发提醒 ---------- */
-async function runReminders() {
-  const s = settings();
+async function runReminders(teamId) {
+  if (!teamId) {
+    let total = 0;
+    for (const t of teamsWithSettings()) total += await runReminders(t.team_id);
+    return total;
+  }
+  const s = settings(teamId);
   if (s.notify_enabled === 0) return 0;
   const today = ymd(new Date());
   const t = new Date(); t.setDate(t.getDate() + 1);
   const tomorrow = ymd(t);
 
   const due = raw().prepare(
-    "SELECT * FROM appointments WHERE reminded_at IS NULL AND visit_date IN (?,?) AND status NOT IN ('已完成','已取消')"
-  ).all(today, tomorrow);
+    "SELECT * FROM appointments WHERE team_id = ? AND reminded_at IS NULL AND visit_date IN (?,?) AND status NOT IN ('已完成','已取消')"
+  ).all(teamId, today, tomorrow);
   if (!due.length) return 0;
 
   const cfg = mailCfg(s);
@@ -180,6 +189,7 @@ async function runReminders() {
         to: tech.email,
         toName: tech.name,
         owner: tech.id,
+        teamId: teamId,
         kind: 'reminder',
         subject: '【出发提醒】' + when + ' ' + (a.time_slot || '') + ' · ' + (a.address || '地址待填'),
         html: mailHtml({
@@ -197,8 +207,8 @@ async function runReminders() {
     }
     if (tech && tech.user_id) {
       try {
-        raw().prepare('INSERT INTO notifications (owner_id, appointment_id, title, body) VALUES (?,?,?,?)')
-          .run(tech.user_id, a.id, when + '上门 · ' + (a.tech_name || ''), apptText(a));
+        raw().prepare('INSERT INTO notifications (team_id, owner_id, appointment_id, title, body) VALUES (?,?,?,?,?)')
+          .run(teamId, tech.user_id, a.id, when + '上门 · ' + (a.tech_name || ''), apptText(a));
         did = true;
       } catch (e) { /* ignore */ }
     }
@@ -210,8 +220,16 @@ async function runReminders() {
 }
 
 /* ---------- 每日汇总 ---------- */
-async function runDigest() {
-  const s = settings();
+async function runDigest(teamId) {
+  if (!teamId) {
+    let any = false;
+    for (const t of teamsWithSettings()) {
+      const ok = await runDigest(t.team_id);
+      if (ok) any = true;
+    }
+    return any;
+  }
+  const s = settings(teamId);
   if (s.email_enabled !== 1) return false;
   const cfg = mailCfg(s);
   if (!mailReady(cfg) || !isEmail(s.digest_email)) return false;
@@ -220,10 +238,10 @@ async function runDigest() {
   if (s.last_digest_date === today) return false;
 
   const list = raw().prepare(
-    "SELECT * FROM appointments WHERE visit_date = ? AND status <> '已取消' ORDER BY time_slot, tech_name"
-  ).all(today);
+    "SELECT * FROM appointments WHERE team_id = ? AND visit_date = ? AND status <> '已取消' ORDER BY time_slot, tech_name"
+  ).all(teamId, today);
   if (!list.length) {
-    raw().prepare('UPDATE settings SET last_digest_date = ? WHERE id = 1').run(today);
+    raw().prepare('UPDATE settings SET last_digest_date = ? WHERE team_id = ?').run(today, teamId);
     return false;
   }
 
@@ -246,11 +264,12 @@ async function runDigest() {
     to: s.digest_email,
     toName: '统筹',
     owner: 'system',
+    teamId: teamId,
     kind: 'digest',
     subject: '【今日派单】' + today + ' · 共 ' + list.length + ' 单',
     html: mailHtml({ title: dayLabel(today) + ' 派单汇总', bodyHtml: body, foot: '每天定时发一封，由 NAS 上的速派服务自动发出。' })
   });
-  if (r.ok) raw().prepare('UPDATE settings SET last_digest_date = ? WHERE id = 1').run(today);
+  if (r.ok) raw().prepare('UPDATE settings SET last_digest_date = ? WHERE team_id = ?').run(today, teamId);
   return r.ok;
 }
 

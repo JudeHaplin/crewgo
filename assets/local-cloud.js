@@ -25,6 +25,7 @@
       const msg = (body && body.error) || ('请求失败（' + res.status + '）');
       const err = new Error(msg);
       err.status = res.status;
+      err.body = body; // 冲突检测要拿到 conflicts / off 明细
       throw err;
     }
     return body;
@@ -94,7 +95,7 @@
       }
       return { data: data, count: count, error: null };
     } catch (e) {
-      return { data: null, count: undefined, error: { message: e.message || '请求失败', status: e.status } };
+      return { data: null, count: undefined, error: { message: e.message || '请求失败', status: e.status, body: e.body } };
     }
   };
 
@@ -103,55 +104,90 @@
   Query.prototype.catch = function (fn) { return this._exec().catch(fn); };
 
   /* ---------- 认证 ---------- */
-  let cachedUser = null;
+  let cachedMeta = null;
 
-  async function fetchMe() {
+  async function fetchMeMeta() {
     const token = getToken();
     if (!token) return null;
     try {
       const out = await call('/api/auth/me');
-      cachedUser = (out && out.user) || null;
-      return cachedUser;
+      cachedMeta = {
+        user: out.user,
+        team: out.team || null,
+        pending: out.pending || null,
+        wechat: out.wechat || { mp: false, qr: false },
+        access_token: token
+      };
+      return cachedMeta;
     } catch (e) {
-      if (e.status === 401) { setToken(''); cachedUser = null; }
+      if (e.status === 401) { setToken(''); cachedMeta = null; }
       return null;
     }
   }
 
+  const wrap = fn => async (...args) => {
+    try {
+      const out = await fn(...args);
+      return { data: out, error: null };
+    } catch (e) {
+      return { data: null, error: { message: e.message, status: e.status } };
+    }
+  };
+
   const cloud = {
     database: {
       from: table => new Query(table),
-      rpc: async () => ({ data: cachedUser ? cachedUser.id : null, error: null })
+      rpc: async () => ({ data: cachedMeta && cachedMeta.user ? cachedMeta.user.id : null, error: null })
     },
     auth: {
       async getSession() {
-        const user = await fetchMe();
-        return { data: user ? { user: user, access_token: getToken() } : null, error: null };
+        const meta = await fetchMeMeta();
+        return { data: meta, error: null };
       },
       async getUser() {
-        const user = await fetchMe();
-        return { data: user ? { user: user } : null, error: null };
+        const meta = await fetchMeMeta();
+        return { data: meta ? { user: meta.user } : null, error: null };
       },
       async signIn(name, pin) {
         try {
           const out = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ name: name, pin: pin }) });
           setToken(out.token);
-          cachedUser = out.user;
-          return { data: { user: out.user, access_token: out.token }, error: null };
+          cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: out.token };
+          return { data: out, error: null };
         } catch (e) {
-          return { data: null, error: { message: e.message } };
+          return { data: null, error: { message: e.message, status: e.status } };
         }
       },
-      async setup(name, pin, phone) {
+      async setup(name, pin, phone, teamName) {
         try {
-          const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ name: name, pin: pin, phone: phone }) });
+          const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ name: name, pin: pin, phone: phone, teamName: teamName }) });
           setToken(out.token);
-          cachedUser = out.user;
-          return { data: { user: out.user, access_token: out.token }, error: null };
+          cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: out.token };
+          return { data: out, error: null };
         } catch (e) {
-          return { data: null, error: { message: e.message } };
+          return { data: null, error: { message: e.message, status: e.status } };
         }
       },
+      register: wrap(async (name, pin, phone) => {
+        const out = await call('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, pin, phone }) });
+        setToken(out.token);
+        cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: out.token };
+        return out;
+      }),
+      updateProfile: wrap(async (name, phone) => {
+        const out = await call('/api/auth/profile', { method: 'POST', body: JSON.stringify({ name, phone }) });
+        cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: getToken() };
+        return out;
+      }),
+      /** 微信授权地址；bind=true 表示给当前账号绑定 */
+      wechatUrl: wrap(async (mode, bind) => call('/api/auth/wechat/url?mode=' + mode + (bind ? '&bind=1' : ''))),
+      /** 微信回跳的一次性票据 → token */
+      wechatTicket: wrap(async ticket => {
+        const out = await call('/api/auth/wechat/ticket', { method: 'POST', body: JSON.stringify({ ticket }) });
+        if (out.token) { setToken(out.token); cachedMeta = out; }
+        return out;
+      }),
+      wechatUnbind: wrap(async () => call('/api/auth/wechat/unbind', { method: 'POST', body: '{}' })),
       async changePin(oldPin, newPin) {
         try {
           await call('/api/auth/pin', { method: 'POST', body: JSON.stringify({ oldPin: oldPin, newPin: newPin }) });
@@ -161,24 +197,25 @@
         }
       },
       async status() {
-        try { return await call('/api/auth/status'); } catch (e) { return { initialized: true }; }
+        try { return await call('/api/auth/status'); } catch (e) { return { initialized: true, wechat: { mp: false, qr: false } }; }
       },
       async signOut() {
         setToken('');
-        cachedUser = null;
+        cachedMeta = null;
         try { await call('/api/auth/logout', { method: 'POST', body: '{}' }); } catch (e) { /* ignore */ }
         return { error: null };
       },
       // 本地版没有短信和第三方登录，保留占位以免旧代码报错
       async sendOtp() { return { data: null, error: { message: '本地版不支持短信登录，请用姓名 + PIN' } }; },
       async verifyOtp() { return { data: null, error: { message: '本地版不支持短信登录，请用姓名 + PIN' } }; },
-      async signInWithOAuth() { return { data: null, error: { message: '本地版不支持第三方登录' } }; }
+      async signInWithOAuth() { return { data: null, error: { message: '请用微信登录按钮' } }; }
     }
   };
 
   window.WorkBuddyCloud = {
     createWorkBuddyCloud: function () { return cloud; }
   };
-  // 给 app.js 用：发信要走服务端（SMTP 授权码不能下发到浏览器）
+  // 给 app.js 用：发信、团队、备份都直接走这里
   window.__api = call;
+  window.__auth = { getToken: getToken, setToken: setToken };
 })();

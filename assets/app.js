@@ -47,6 +47,22 @@
   // 推送到微信时点开的落地页（保留分享码，直接进「我的安排」）
   const appLink = () => location.origin + location.pathname + location.search + '#/mine';
 
+  /* 手机号：大陆 11 位，允许用户带 +86 / 空格 / 横线 */
+  const normPhone = v => String(v === null || v === undefined ? '' : v).trim()
+    .replace(/[\s\-()]/g, '').replace(/^\+?86(?=1\d{10}$)/, '');
+  function phoneError(v) {
+    const p = normPhone(v);
+    if (!p) return '请填写手机号';
+    if (!/^1[3-9]\d{9}$/.test(p)) return '手机号要 11 位、以 1 开头（现在 ' + p.length + ' 位）';
+    return '';
+  }
+  /** 时段重叠：全天和任何时段都算撞，其余只有相同才撞 */
+  const slotOverlap = (a, b) => {
+    const x = a || '上午', y = b || '上午';
+    if (x === y) return true;
+    return x === '全天' || y === '全天';
+  };
+
   function esc(v) {
     if (v === null || v === undefined) return '';
     return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -106,13 +122,17 @@
   /* ---------- 状态 ---------- */
   const state = {
     session: null, user: null, uid: null, profile: null,
-    profiles: [], projects: [], appointments: [], notifications: [],
+    profiles: [], projects: [], appointments: [], notifications: [], timeOff: [],
     settings: null,
+    team: null, pending: null, wechat: { mp: false, qr: false },
+    teamRequests: [], wxSettings: null, teamMode: 'join',
     view: 'board',
     board: { year: new Date().getFullYear(), month: new Date().getMonth(), day: todayStr() },
     filters: { tech: '', project: '', status: '', q: '' },
     settingsTab: 'projects',
     loginMode: 'login',
+    authView: 'login',
+    wxBannerHidden: false,
     lastNotifId: 0,
     pollTimer: null
   };
@@ -139,53 +159,60 @@
     } catch (e) { /* ignore */ }
     return null;
   }
-  function showLogin(msg, ok) {
-    $('#boot').classList.add('hidden');
-    $('#onboard-view').classList.add('hidden');
-    $('#app-view').classList.add('hidden');
-    const v = $('#login-view');
-    v.classList.remove('hidden');
-    v.innerHTML = loginHtml(msg, ok);
+  /* ============================================================
+     登录 / 注册 / 完善资料 / 团队门
+     ============================================================ */
+  const msgHtml = (msg, ok) => msg ? '<div class="msg ' + (ok ? 'msg-ok' : '') + '">' + esc(msg) + '</div>' : '';
+
+  function authCard(title, desc, body, foot) {
+    return '<div class="auth-card">' +
+      '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派</h1></div>' +
+      '<p class="auth-sub">维修人员预约管理系统</p>' +
+      '<h2 class="auth-title">' + esc(title) + '</h2>' +
+      (desc ? '<p class="auth-desc">' + desc + '</p>' : '') +
+      body +
+      (foot ? '<p class="auth-foot">' + foot + '</p>' : '') +
+    '</div>';
   }
-  function showOnboarding(data) {
+
+  function showAuth(view, msg, ok) {
+    state.authView = view || 'login';
+    const gate = ['profile', 'team', 'pending'].indexOf(state.authView) >= 0;
     $('#boot').classList.add('hidden');
-    $('#login-view').classList.add('hidden');
     $('#app-view').classList.add('hidden');
-    const v = $('#onboard-view');
-    v.classList.remove('hidden');
-    v.innerHTML = onboardHtml(data);
+    const host = gate ? $('#onboard-view') : $('#login-view');
+    (gate ? $('#login-view') : $('#onboard-view')).classList.add('hidden');
+    host.classList.remove('hidden');
+    if (state.authView === 'login') host.innerHTML = loginHtml(msg, ok);
+    else if (state.authView === 'setup') host.innerHTML = setupHtml(msg, ok);
+    else if (state.authView === 'register') host.innerHTML = registerHtml(msg, ok);
+    else if (state.authView === 'profile') host.innerHTML = profileGateHtml(msg, ok);
+    else if (state.authView === 'team') host.innerHTML = teamGateHtml(msg, ok);
+    else host.innerHTML = pendingGateHtml();
+  }
+  function showLogin(msg, ok) { showAuth(state.loginMode === 'setup' ? 'setup' : 'login', msg, ok); }
+
+  /** 微信按钮：微信里直接用公众号授权，电脑上用开放平台扫码 */
+  function wechatButtons() {
+    const wx = state.wechat || {};
+    const mp = !!wx.mp;
+    const qr = !!wx.qr;
+    if (!mp && !qr) return '';
+    const inApp = inWeChat();
+    let btn = '';
+    if (inApp && mp) btn = '<button type="button" class="btn oauth-wechat" data-act="wx-login" data-mode="mp">微信一键登录</button>';
+    else if (qr) btn = '<button type="button" class="btn oauth-wechat" data-act="wx-login" data-mode="qr">微信扫码登录</button>';
+    else if (mp) btn = '<button type="button" class="btn oauth-wechat" data-act="wx-login" data-mode="mp">微信登录</button>';
+    if (!btn) return '';
+    const tip = (!qr && !inApp)
+      ? '<p class="hint" style="text-align:center;margin:8px 0 0">在电脑上想扫码登录，需要先在「设置 → 登录方式」里配置微信开放平台网站应用</p>'
+      : '';
+    return '<div class="divider">或</div><div class="oauth-row">' + btn + '</div>' + tip;
   }
 
   function loginHtml(msg, ok) {
-    const setup = state.loginMode === 'setup';
-    const head =
-      '<div class="auth-card">' +
-        '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派</h1></div>' +
-        '<p class="auth-sub">维修人员预约管理系统</p>' +
-        '<h2 class="auth-title">' + (setup ? '初始化管理员' : '登录') + '</h2>' +
-        (msg ? '<div class="msg ' + (ok ? 'msg-ok' : '') + '">' + esc(msg) + '</div>' : '') +
-        '<p class="auth-desc">' + (setup
-          ? '第一次使用，先建一个统筹管理员账号，PIN 就相当于密码。'
-          : '输入姓名和 PIN 即可登录，不用收验证码。') + '</p>';
-
-    if (setup) {
-      return head +
-        '<form data-form="setup" novalidate>' +
-          '<div class="field"><label for="st-name">你的姓名</label>' +
-            '<input class="input" id="st-name" name="name" placeholder="如：王建国" required maxlength="20"></div>' +
-          '<div class="field"><label for="st-pin">设置 PIN</label>' +
-            '<div class="pin-wrap"><input class="input" id="st-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位" autocomplete="new-password">' +
-            '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div>' +
-            '<div class="hint">' + PIN_TIP + '</div></div>' +
-          '<div class="field"><label for="st-pin2">再输一次</label>' +
-            '<input class="input" id="st-pin2" name="pin2" type="password"' + PIN_ATTRS + ' placeholder="确认 PIN" autocomplete="new-password"></div>' +
-          '<button class="btn btn-primary btn-block" type="submit">创建管理员账号</button>' +
-        '</form>' +
-        '<p class="auth-foot"><a href="#" data-act="login-mode" data-mode="login" style="color:var(--text-3)">已有账号，去登录</a></p>' +
-      '</div>';
-    }
-
-    return head +
+    return authCard('登录', '输入姓名和 PIN 即可登录，不用收验证码。',
+      msgHtml(msg, ok) +
       '<form data-form="login" novalidate>' +
         '<div class="field"><label for="lg-name">姓名</label>' +
           '<input class="input" id="lg-name" name="name" placeholder="你的姓名" required maxlength="20" autocomplete="username"></div>' +
@@ -194,106 +221,195 @@
           '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div></div>' +
         '<button class="btn btn-primary btn-block" type="submit">登录</button>' +
       '</form>' +
-      '<p class="auth-foot">忘记 PIN 找统筹在「设置 → 人员」里重设<br>' +
-        '<a href="#" data-act="login-mode" data-mode="setup" style="color:var(--text-3)">第一次部署？初始化管理员</a></p>' +
-    '</div>';
+      wechatButtons(),
+      '还没有账号？<a href="#" data-act="auth-view" data-view="register" style="color:var(--primary)">注册一个</a><br>' +
+      '忘记 PIN 找团队管理员在「设置 → 人员」里重设<br>' +
+      '<a href="#" data-act="auth-view" data-view="setup" style="color:var(--text-3)">第一次部署？初始化管理员</a>');
   }
 
-  function onboardHtml(data) {
-    const unclaimed = data.unclaimed || [];
-    const first = data.first;
-    let body = '';
-    if (first) {
-      body =
-        '<div class="notice" style="margin-bottom:16px">这是首次部署，你将成为<b>统筹管理员</b>，之后可以在「设置 → 人员」里添加其他同事。</div>' +
-        '<form data-form="onboard-new">' +
-          '<input type="hidden" name="role" value="admin">' +
-          '<div class="field"><label>你的姓名</label><input class="input" name="name" placeholder="如：王建国" required maxlength="20"></div>' +
-          '<div class="field"><label>手机号（可选）</label><input class="input" name="phone" type="tel" maxlength="20" placeholder="方便同事联系"></div>' +
-          '<button class="btn btn-primary btn-block" type="submit">进入系统</button>' +
-        '</form>';
-    } else {
-      body =
-        (unclaimed.length
-          ? '<p class="hint" style="margin:0 0 10px">名单里已有你的档案，选一个即可；没有的话新建。</p>' +
-            '<div class="pick-list">' + unclaimed.map(p =>
-              '<div class="pick-item" data-act="claim" data-id="' + esc(p.id) + '">' +
-                '<span class="dot" style="background:' + esc(p.color || '#2b3c8f') + '"></span>' +
-                '<span class="nm">' + esc(p.name) + '</span>' +
-                '<span class="meta">' + esc(ROLE_LABEL[p.role] || p.role) + '</span>' +
-              '</div>').join('') + '</div>'
-          : '') +
-        '<form data-form="onboard-new">' +
-          '<div class="field"><label>我的姓名</label><input class="input" name="name" placeholder="请输入真实姓名" required maxlength="20"></div>' +
-          '<div class="field"><label>手机号（可选）</label><input class="input" name="phone" type="tel" maxlength="20" placeholder="方便同事联系"></div>' +
-          '<div class="field"><label>我的身份</label>' +
-            '<div class="role-cards">' +
-              '<div class="role-card active" data-act="pick-role" data-role="tech"><b>维修人员</b><span>接单、查看自己的安排</span></div>' +
-              '<div class="role-card" data-act="pick-role" data-role="requester"><b>预约人</b><span>提交预约、查看全员排期</span></div>' +
-            '</div>' +
-            '<input type="hidden" name="role" value="tech">' +
-          '</div>' +
-          '<button class="btn btn-primary btn-block" type="submit">完成，进入系统</button>' +
-        '</form>';
-    }
-    return '<div class="auth-card">' +
-      '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派</h1></div>' +
-      '<p class="auth-sub">维修人员预约管理系统</p>' +
-      '<h2 class="auth-title">' + (first ? '开始使用' : '绑定你的身份') + '</h2>' +
-      '<p class="auth-desc">' + (first ? '只需一步，之后可随时在设置中调整。' : '绑定后，你的排期、通知都会归到这里。') + '</p>' +
-      body +
-      '<p class="auth-foot"><a href="#" data-act="logout" style="color:var(--text-3)">切换账号</a></p>' +
-      '</div>';
+  function setupHtml(msg, ok) {
+    return authCard('初始化', '第一次使用，先建一个统筹账号；系统会同时给你建一个团队，之后别人凭团队码申请加入。',
+      msgHtml(msg, ok) +
+      '<form data-form="setup" novalidate>' +
+        '<div class="field"><label for="st-name">你的姓名</label>' +
+          '<input class="input" id="st-name" name="name" placeholder="如：王建国" required maxlength="20"></div>' +
+        '<div class="field"><label for="st-phone">手机号</label>' +
+          '<input class="input" id="st-phone" name="phone" type="tel" inputmode="numeric" maxlength="20" placeholder="11 位手机号"></div>' +
+        '<div class="field"><label for="st-team">团队名称</label>' +
+          '<input class="input" id="st-team" name="teamName" maxlength="30" placeholder="如：某某物业维修组（可留空）"></div>' +
+        '<div class="field"><label for="st-pin">设置 PIN</label>' +
+          '<div class="pin-wrap"><input class="input" id="st-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位" autocomplete="new-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div>' +
+          '<div class="hint">' + PIN_TIP + '</div></div>' +
+        '<div class="field"><label for="st-pin2">再输一次</label>' +
+          '<input class="input" id="st-pin2" name="pin2" type="password"' + PIN_ATTRS + ' placeholder="确认 PIN" autocomplete="new-password"></div>' +
+        '<button class="btn btn-primary btn-block" type="submit">创建团队并进入</button>' +
+      '</form>',
+      '<a href="#" data-act="auth-view" data-view="login" style="color:var(--text-3)">已有账号，去登录</a>');
+  }
+
+  function registerHtml(msg, ok) {
+    return authCard('注册', '注册后还需要用团队码申请加入，管理员同意了才能看到团队数据。',
+      msgHtml(msg, ok) +
+      '<form data-form="register" novalidate>' +
+        '<div class="field"><label for="rg-name">姓名</label>' +
+          '<input class="input" id="rg-name" name="name" placeholder="真实姓名，同事一眼能认出" required maxlength="20"></div>' +
+        '<div class="field"><label for="rg-phone">手机号（选填）</label>' +
+          '<input class="input" id="rg-phone" name="phone" type="tel" inputmode="numeric" maxlength="20" placeholder="11 位手机号"></div>' +
+        '<div class="field"><label for="rg-pin">设置 PIN</label>' +
+          '<div class="pin-wrap"><input class="input" id="rg-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位" autocomplete="new-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div>' +
+          '<div class="hint">' + PIN_TIP + '</div></div>' +
+        '<div class="field"><label for="rg-pin2">再输一次</label>' +
+          '<input class="input" id="rg-pin2" name="pin2" type="password"' + PIN_ATTRS + ' placeholder="确认 PIN" autocomplete="new-password"></div>' +
+        '<button class="btn btn-primary btn-block" type="submit">注册</button>' +
+      '</form>' +
+      wechatButtons(),
+      '已经有账号？<a href="#" data-act="auth-view" data-view="login" style="color:var(--primary)">去登录</a>');
+  }
+
+  /** 微信注册的账号：登录后必须补齐姓名和手机号才放行 */
+  function profileGateHtml(msg, ok) {
+    const u = state.user || {};
+    return authCard('完善资料', '用微信登录的账号还缺姓名和手机号，填完才能进入团队。',
+      msgHtml(msg, ok) +
+      '<form data-form="profile-setup" novalidate>' +
+        '<div class="field"><label for="pf-name">姓名</label>' +
+          '<input class="input" id="pf-name" name="name" value="' + esc(u.name || '') + '" placeholder="真实姓名" required maxlength="20"></div>' +
+        '<div class="field"><label for="pf-phone">手机号</label>' +
+          '<input class="input" id="pf-phone" name="phone" type="tel" inputmode="numeric" maxlength="20" value="' + esc(u.phone || '') + '" placeholder="11 位手机号"></div>' +
+          '<div class="hint">手机号要 11 位。同事要靠它联系你，团队管理员也用它核对身份。</div>' +
+        '<button class="btn btn-primary btn-block" type="submit">保存并继续</button>' +
+      '</form>',
+      '<a href="#" data-act="logout" style="color:var(--text-3)">换个账号</a>');
+  }
+
+  function teamGateHtml(msg, ok) {
+    const mode = state.teamMode || 'join';
+    const tab = (k, label) => '<button class="' + (mode === k ? 'active' : '') + '" data-act="team-mode" data-mode="' + k + '">' + label + '</button>';
+    const joinForm =
+      '<form data-form="team-join" novalidate>' +
+        '<div class="field"><label for="tj-code">团队码</label>' +
+          '<input class="input code-input" id="tj-code" name="code" placeholder="ABC123456" maxlength="12" autocapitalize="characters" autocomplete="off" spellcheck="false">' +
+          '<div class="hint">3 位大写字母 + 6 位数字，找团队统筹或管理员要。</div></div>' +
+        '<div class="field"><label for="tj-msg">说明（选填）</label>' +
+          '<input class="input" id="tj-msg" name="message" maxlength="60" placeholder="如：水电组 张工"></div>' +
+        '<button class="btn btn-primary btn-block" type="submit">提交申请</button>' +
+      '</form>';
+    const createForm =
+      '<form data-form="team-create" novalidate>' +
+        '<div class="field"><label for="tc-name">团队名称</label>' +
+          '<input class="input" id="tc-name" name="name" maxlength="30" placeholder="如：某某物业维修组"></div>' +
+        '<p class="hint" style="margin:-6px 0 12px">创建后你就是<b>团队统筹</b>（最高权限），系统会随机生成团队码，别人凭码申请加入。</p>' +
+        '<button class="btn btn-primary btn-block" type="submit">创建团队</button>' +
+      '</form>';
+    return authCard('加入团队', '数据按团队隔离：没有加入团队前，看不到任何预约和人员资料。',
+      msgHtml(msg, ok) +
+      '<div class="seg seg-block" style="margin-bottom:18px">' + tab('join', '我有团队码') + tab('create', '创建新团队') + '</div>' +
+      (mode === 'join' ? joinForm : createForm) +
+      '<div class="notice" style="margin-top:16px">团队管理员收到申请后会审批，通过后你才能看到团队内部的排期和预约单。</div>',
+      '<a href="#" data-act="logout" style="color:var(--text-3)">换个账号登录</a>');
+  }
+
+  function pendingGateHtml() {
+    const p = state.pending || {};
+    return authCard('等待审批', '',
+      '<div class="notice" style="margin-bottom:16px">' +
+        '你申请加入 <b>' + esc(p.team_name || p.team_code || '团队') + '</b>，正在等管理员审批。<br>' +
+        '通过后刷新本页就能进入；如果迟迟没人处理，直接催一下团队统筹。' +
+      '</div>' +
+      '<div style="display:flex;gap:8px">' +
+        '<button class="btn btn-primary" style="flex:1" data-act="team-refresh">刷新看看</button>' +
+        '<button class="btn" data-act="team-cancel">撤回申请</button>' +
+      '</div>',
+      '<a href="#" data-act="logout" style="color:var(--text-3)">换个账号登录</a>');
   }
 
   /* ---------- 认证流程 ---------- */
-  async function handleCallback() {
+  /** 微信授权回来：用一次性票据换 token，票据不会留在地址栏 */
+  async function handleWechatReturn() {
     const url = new URL(location.href);
-    if (!url.searchParams.has('code') && !url.searchParams.has('error')) return;
-    const provider = url.searchParams.get('provider');
-    if (provider !== 'workbuddy' && provider !== 'wechat') return;
-    const handler = provider === 'workbuddy' ? cloud.auth.handleWorkBuddyCallback : cloud.auth.handleWechatWebCallback;
-    if (typeof handler !== 'function') {
-      showLogin('当前登录组件不支持该方式，请使用手机号登录。');
-      return;
-    }
-    const { data: session, error } = await handler.call(cloud.auth);
-    if (error) { showLogin('登录失败：' + (error.message || '请重试')); return; }
-    if (session) {
-      ['code', 'state', 'provider'].forEach(k => url.searchParams.delete(k));
+    const ticket = url.searchParams.get('wx_ticket');
+    const bind = url.searchParams.get('wx_bind');
+    const err = url.searchParams.get('wx_error');
+    if (!ticket && !bind && !err) return false;
+    const clean = () => {
+      ['wx_ticket', 'wx_bind', 'wx_error'].forEach(k => url.searchParams.delete(k));
       history.replaceState(null, '', url.pathname + url.search + url.hash);
+    };
+    if (ticket) {
+      clean();
+      const r = await cloud.auth.wechatTicket(ticket);
+      if (r.error) { showLogin('微信登录失败：' + r.error.message); return true; }
+      toast('微信登录成功');
+      return true;
     }
+    if (bind) {
+      clean();
+      const r = await cloud.auth.wechatTicket(bind);
+      if (r.error) toast('绑定失败：' + r.error.message, 4200);
+      else { toast('微信已绑定，下次点一下就能进'); state.wxBannerHidden = true; }
+      return true;
+    }
+    clean();
+    showLogin('微信登录失败：' + err);
+    return true;
+  }
+
+  function startWechat(mode, bind) {
+    cloud.auth.wechatUrl(mode || 'qr', !!bind).then(r => {
+      if (r.error) { toast(r.error.message, 4600); return; }
+      if (r.data && r.data.url) location.assign(r.data.url);
+    });
+  }
+
+  /** 微信里打开时直接拉起授权（一次会话只自动跳一次，避免死循环） */
+  function maybeAutoWechat() {
+    if (!inWeChat()) return;
+    if (!(state.wechat && state.wechat.mp)) return;
+    if (location.search.indexOf('wx_error') >= 0) return;
+    try {
+      if (sessionStorage.getItem('wx_auto') === '1') return;
+      sessionStorage.setItem('wx_auto', '1');
+    } catch (e) { /* 隐私模式下忽略 */ }
+    setTimeout(() => startWechat('mp', false), 700);
   }
 
   async function boot() {
+    await handleWechatReturn();
     let session = null;
     try {
       const res = await cloud.auth.getSession();
       session = res.data;
     } catch (e) { /* ignore */ }
     if (!session) {
-      // 全新部署（一个人都还没建）时直接进「初始化管理员」，
-      // 不然第一次打开看到登录框，填姓名+PIN 只会得到「姓名或 PIN 不对」。
+      // 全新部署（一个人都还没建）时直接进「初始化」
       try {
-        const r = await fetch('/api/auth/status');
-        if (r.ok) {
-          const st = await r.json();
-          if (st && st.initialized === false) state.loginMode = 'setup';
+        const st = await cloud.auth.status();
+        if (st) {
+          state.wechat = st.wechat || state.wechat;
+          if (st.initialized === false) state.loginMode = 'setup';
         }
-      } catch (e) { /* 云端版没有这个接口，忽略 */ }
+      } catch (e) { /* 忽略 */ }
       showLogin();
+      maybeAutoWechat();
       return;
     }
 
     state.session = session;
     state.user = session.user || {};
-    state.uid = await resolveUid(state.user);
+    state.uid = state.user.id || await resolveUid(state.user);
+    state.team = session.team || null;
+    state.pending = session.pending || null;
+    state.wechat = session.wechat || state.wechat;
     if (!state.uid) { showLogin('无法获取账号信息，请重新登录。'); return; }
+
+    if (state.user.need_profile) { showAuth('profile'); return; }
+    if (!state.team) { showAuth(state.pending ? 'pending' : 'team'); return; }
 
     let prof = null;
     try { prof = await fetchMyProfile(); } catch (e) { /* ignore */ }
-
-    if (!prof) { await startOnboarding(); return; }
+    if (!prof) { showAuth('team', '这个账号还没有团队内的资料，请重新加入团队'); return; }
     state.profile = prof;
     await enterApp();
   }
@@ -302,14 +418,6 @@
     const { data, error } = await db.from('profiles').select('*').eq('user_id', state.uid).maybeSingle();
     if (error) throw error;
     return data || null;
-  }
-
-  async function startOnboarding() {
-    const [{ data: list }, { count }] = await Promise.all([
-      db.from('profiles').select('*').is('user_id', null).order('created_at', { ascending: true }),
-      db.from('profiles').select('id', { count: 'exact', head: true })
-    ]);
-    showOnboarding({ unclaimed: list || [], first: !count });
   }
 
   async function enterApp() {
@@ -333,21 +441,39 @@
 
   /* ---------- 数据 ---------- */
   async function loadAll() {
-    const [pr, pf, ap, st, nf] = await Promise.all([
+    const [pr, pf, ap, st, nf, to] = await Promise.all([
       db.from('projects').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
       db.from('profiles').select('*').order('created_at', { ascending: true }),
       db.from('appointments').select('*').order('visit_date', { ascending: false }).limit(1000),
-      db.from('settings').select('*').eq('id', 1).maybeSingle(),
-      db.from('notifications').select('*').order('created_at', { ascending: false }).limit(50)
+      // 服务端按团队过滤，一个团队只有一行 settings
+      db.from('settings').select('*').maybeSingle(),
+      db.from('notifications').select('*').order('created_at', { ascending: false }).limit(50),
+      db.from('time_off').select('*').limit(2000)
     ]);
     state.projects = pr.data || [];
     state.profiles = pf.data || [];
     state.appointments = ap.data || [];
     state.settings = st.data || null;
     state.notifications = nf.data || [];
+    state.timeOff = to.data || [];
 
     const me = state.profiles.filter(p => p.user_id === state.uid)[0];
-    if (me) state.profile = me;
+    if (me) {
+      // profiles 表里没有微信绑定状态，用 /api/auth/me 的结果补上
+      me.wx_bound = !!(state.user && state.user.wx_bound);
+      state.profile = me;
+    }
+
+    // 管理员顺带拉一下待审申请和微信配置（页面要显示条数/状态）
+    if (state.profile && (state.profile.team_role === 'owner' || state.profile.team_role === 'admin')) {
+      try {
+        const r = await window.__api('/api/team/requests');
+        state.teamRequests = (r && r.data) || [];
+      } catch (e) { state.teamRequests = []; }
+      try {
+        state.wxSettings = await window.__api('/api/settings/wechat');
+      } catch (e) { state.wxSettings = null; }
+    }
 
     const newest = state.notifications[0];
     if (newest && Number(newest.id) > state.lastNotifId) {
@@ -398,7 +524,7 @@
       return String(a.tech_name || '').localeCompare(String(b.tech_name || ''), 'zh');
     });
   }
-  const isAdmin = () => state.profile && state.profile.role === 'admin';
+  const isAdmin = () => !!state.profile && (state.profile.team_role === 'owner' || state.profile.team_role === 'admin' || state.profile.role === 'admin');
 
   /* ============================================================
      导航 / 外壳
@@ -415,11 +541,26 @@
 
   function render() {
     const page = $('#page');
-    if (state.view === 'board') page.innerHTML = boardHtml();
-    else if (state.view === 'list') page.innerHTML = listHtml();
-    else if (state.view === 'mine') page.innerHTML = mineHtml();
-    else page.innerHTML = settingsHtml();
+    let html = '';
+    if (state.view === 'board') html = boardHtml();
+    else if (state.view === 'list') html = listHtml();
+    else if (state.view === 'mine') html = mineHtml();
+    else html = settingsHtml();
+    page.innerHTML = wxBannerHtml() + html;
     page.scrollTop = 0;
+  }
+
+  /** 没绑微信的提示条（登录后提示一次，可关掉） */
+  function wxBannerHtml() {
+    if (state.wxBannerHidden) return '';
+    if (!state.profile || state.profile.wx_bound) return '';
+    const wx = state.wechat || {};
+    if (!wx.mp && !wx.qr) return '';
+    return '<div class="wx-banner">' +
+      '<span class="grow">还没绑定微信。绑定之后，下次在微信里打开可以一键登录，不用再输 PIN。</span>' +
+      '<button class="btn btn-sm btn-primary" data-act="wx-bind">去绑定</button>' +
+      '<button class="btn btn-sm btn-ghost" data-act="wx-banner-hide">以后再说</button>' +
+    '</div>';
   }
 
   function renderUserChip() {
@@ -469,6 +610,11 @@
     list.forEach(a => { (byDate[a.visit_date] = byDate[a.visit_date] || []).push(a); });
     Object.keys(byDate).forEach(k => byDate[k] = sortAppts(byDate[k]));
 
+    // 休息日按天索引，日历格子和小字提示都用它
+    const offByDate = {};
+    state.timeOff.forEach(o => { (offByDate[o.off_date] = offByDate[o.off_date] || []).push(o); });
+    const offNames = ds => (offByDate[ds] || []).map(o => (profileById(o.profile_id) || {}).name || o.name || '?');
+
     const td = todayStr();
     let rows = '';
     for (let r = 0; r < cells.length / 7; r++) {
@@ -489,6 +635,7 @@
             '<span class="t">' + esc(a.time_slot) + '</span>' + esc(a.tech_name || '待分配') + '</div>';
         });
         if (evts.length > 3) inner += '<div class="cal-more">+' + (evts.length - 3) + ' 项</div>';
+        if (offByDate[ds] && offByDate[ds].length) inner += '<div class="cal-off">休 ' + offByDate[ds].length + '</div>';
         rows += '<div class="' + cls.join(' ') + '" data-act="select-day" data-date="' + ds + '">' + inner + '</div>';
       }
       rows += '</div>';
@@ -550,6 +697,8 @@
           '<button class="btn btn-sm" data-act="new-appt-day" data-date="' + b.day + '">在这天新建</button>' +
         '</div>' +
         (dayList.length ? dayList.map(apptRowHtml).join('') : emptyHtml('这天没有安排', '点右上角可以给这天加一条预约')) +
+        (offNames(b.day).length
+          ? '<div class="off-note">这天休息：' + esc(offNames(b.day).join('、')) + '（不会被排单）</div>' : '') +
       '</div>';
   }
 
@@ -721,11 +870,16 @@
     const tabs = [
       { k: 'projects', t: '项目' },
       { k: 'people', t: '人员' },
+      { k: 'team', t: '团队' },
       { k: 'notify', t: '通知' },
+      { k: 'data', t: '数据备份' },
       { k: 'me', t: '我的资料' }
     ];
+    if (isAdmin()) tabs.splice(5, 0, { k: 'login', t: '登录方式' });
     return '<div class="page-head"><div><h1 class="page-title">设置</h1>' +
-      '<p class="page-desc">' + esc(ROLE_LABEL[state.profile.role] || '') + ' · ' + (isAdmin() ? '可管理项目与人员' : '项目与人员由统筹管理员维护') + '</p></div></div>' +
+      '<p class="page-desc">' + esc(ROLE_LABEL[state.profile.role] || '') + ' · ' +
+        (isAdmin() ? '可管理项目、人员与团队' : '项目与人员由团队管理员维护') +
+        (state.team ? ' · 团队「' + esc(state.team.name) + '」' : '') + '</p></div></div>' +
       '<div class="settings-grid">' +
         '<div class="settings-nav">' + tabs.map(x =>
           '<button class="' + (state.settingsTab === x.k ? 'active' : '') + '" data-act="settings-tab" data-tab="' + x.k + '">' + x.t + '</button>').join('') +
@@ -737,7 +891,10 @@
   function settingsPane() {
     if (state.settingsTab === 'projects') return projectsPane();
     if (state.settingsTab === 'people') return peoplePane();
+    if (state.settingsTab === 'team') return teamPane();
     if (state.settingsTab === 'notify') return notifyPane();
+    if (state.settingsTab === 'data') return dataPane();
+    if (state.settingsTab === 'login') return loginPane();
     return mePane();
   }
 
@@ -762,28 +919,61 @@
       '</p></div></div>';
   }
 
+  /** 某个人接下来的休息日（只列今天及以后，最多 5 条） */
+  function upcomingOff(profileId) {
+    const t = todayStr();
+    return state.timeOff
+      .filter(o => o.profile_id === profileId && o.off_date >= t)
+      .sort((a, b) => a.off_date < b.off_date ? -1 : 1);
+  }
+
   function peoplePane() {
-    const rows = state.profiles.map(p =>
-      '<div class="list-row">' +
+    const rows = state.profiles.map(p => {
+      const offs = upcomingOff(p.id);
+      return '<div class="list-row">' +
         '<span class="avatar" style="background:' + esc(p.color || '#2b6ef6') + ';width:30px;height:30px;font-size:12px">' + esc(String(p.name).slice(0, 1)) + '</span>' +
         '<div class="grow"><div class="nm">' + esc(p.name) +
           (p.id === state.profile.id ? ' <span class="tag tag-已确认">我</span>' : '') +
-          (p.user_id ? '' : ' <span class="tag tag-待确认">未绑定</span>') +
-          (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') + '</div>' +
-          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
+          (p.wx_bound ? ' <span class="tag tag-已确认">微信</span>' : '') +
+          (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') +
+          (offs.length ? ' <span class="tag tag-待确认">休 ' + offs.length + ' 天</span>' : '') + '</div>' +
+          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) +
+            (offs.length ? ' · 最近休息 ' + esc(offs[0].off_date.slice(5)) : '') + '</div></div>' +
+        ((isAdmin() || p.id === state.profile.id)
+          ? '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">排休</button>' : '') +
         (isAdmin()
           ? '<button class="btn btn-sm" data-act="edit-person" data-id="' + esc(p.id) + '">编辑</button>' +
             (p.id === state.profile.id ? '' : '<button class="btn btn-sm btn-danger" data-act="del-person" data-id="' + esc(p.id) + '">删除</button>')
           : '') +
-      '</div>').join('');
+      '</div>';
+    }).join('');
+
+    const allOff = state.timeOff.slice().filter(o => o.off_date >= addDays(-1)).sort((a, b) => a.off_date < b.off_date ? -1 : 1);
+    const offRows = allOff.slice(0, 30).map(o => {
+      const p = profileById(o.profile_id);
+      return '<div class="list-row">' +
+        '<div class="grow"><div class="nm">' + esc(o.off_date) + ' · ' + esc(p ? p.name : o.name || '（已移除）') +
+          (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div>' +
+          '<div class="sub">这天不排单</div></div>' +
+        ((isAdmin() || o.profile_id === state.profile.id)
+          ? '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' : '') +
+      '</div>';
+    }).join('');
+
     return '<div class="card">' +
       '<div class="card-head"><h3 class="card-title">人员（' + state.profiles.length + '）</h3>' +
         (isAdmin() ? '<button class="btn btn-sm btn-primary" data-act="add-person">＋ 添加人员</button>' : '') + '</div>' +
       rows +
       '</div>' +
+      '<div class="card" style="margin-top:14px">' +
+        '<div class="card-head"><h3 class="card-title">休息日</h3>' +
+          '<span class="hint">排了休息的人，那天不能被预约</span></div>' +
+        (offRows || '<div class="empty" style="padding:26px"><p>还没有排休</p><span>点人员行上的「排休」可以给他设几天休息</span></div>') +
+      '</div>' +
       '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">' +
-        '<b>未绑定</b>表示这个人还没登录过。你可以先把维修工的姓名录进来并直接派单，' +
-        '他登录后从名单里认领自己即可，历史派单自动归到他名下。' +
+        '人员就是登录账号：<b>姓名 + PIN</b> 登录，登录后自动归到这个团队。<br>' +
+        '想临时加个临时工，直接「添加人员」并派单即可；对方要自己登录时，用「注册」再用团队码申请。<br>' +
+        '<b>排休</b>会给这个人写上休息日，日历和派单都会拦住这段时间。' +
       '</p></div></div>';
   }
 
@@ -869,6 +1059,193 @@
       '</div></div>' + help;
   }
 
+  /* ============================================================
+     设置：团队
+     ============================================================ */
+  const teamRoleLabel = r => ({ owner: '团队统筹', admin: '管理员', member: '成员' }[r] || '成员');
+
+  function teamPane() {
+    const t = state.team || {};
+    const owner = state.profile.team_role === 'owner';
+    const admin = isAdmin();
+    const members = state.profiles.length;
+    const reqs = state.teamRequests || [];
+    const pending = reqs.length;
+
+    const reqRows = reqs.map(r =>
+      '<div class="list-row">' +
+        '<span class="avatar" style="background:#8b93a3;width:30px;height:30px;font-size:12px">' + esc(String(r.name || '?').slice(0, 1)) + '</span>' +
+        '<div class="grow"><div class="nm">' + esc(r.name) +
+          ' <span class="hint">' + esc(r.phone || '未填手机号') + '</span></div>' +
+          '<div class="sub">' + esc(r.message || '申请加入') + ' · ' + esc(String(r.created_at || '').slice(0, 16)) + '</div></div>' +
+        '<button class="btn btn-sm btn-primary" data-act="req-approve" data-id="' + r.id + '">同意</button>' +
+        '<button class="btn btn-sm" data-act="req-reject" data-id="' + r.id + '">拒绝</button>' +
+      '</div>').join('');
+
+    const memberRows = state.profiles.map(p => {
+      const me = p.id === state.profile.id;
+      return '<div class="list-row">' +
+        '<span class="avatar" style="background:' + esc(p.color || '#2b6ef6') + ';width:30px;height:30px;font-size:12px">' + esc(String(p.name).slice(0, 1)) + '</span>' +
+        '<div class="grow"><div class="nm">' + esc(p.name) + (me ? ' <span class="tag tag-已确认">我</span>' : '') +
+          ' <span class="tag ' + (p.team_role === 'owner' ? 'tag-加急' : (p.team_role === 'admin' ? 'tag-已确认' : 'tag-待确认')) + '">' +
+          esc(teamRoleLabel(p.team_role)) + '</span></div>' +
+          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
+        (owner && !me && p.team_role !== 'owner'
+          ? '<button class="btn btn-sm" data-act="member-role" data-id="' + esc(p.id) + '" data-role="' + (p.team_role === 'admin' ? 'member' : 'admin') + '">' +
+            (p.team_role === 'admin' ? '降为成员' : '设为管理员') + '</button>' +
+            '<button class="btn btn-sm" data-act="member-owner" data-id="' + esc(p.id) + '">转让队长</button>'
+          : '') +
+        (admin && !me && p.team_role !== 'owner'
+          ? '<button class="btn btn-sm btn-danger" data-act="member-remove" data-id="' + esc(p.id) + '">移出</button>' : '') +
+      '</div>';
+    }).join('');
+
+    return '<div class="card">' +
+        '<div class="card-head"><h3 class="card-title">团队</h3>' +
+          '<span class="tag tag-已确认">' + esc(teamRoleLabel(state.profile.team_role)) + '</span></div>' +
+        '<div class="card-body">' +
+          '<div class="kv"><span>团队名称</span><b>' + esc(t.name || '—') + '</b></div>' +
+          '<div class="kv"><span>成员</span><b>' + members + ' 人</b></div>' +
+          '<div class="kv"><span>待审申请</span><b>' + pending + ' 条</b></div>' +
+          '<div class="field" style="margin-top:16px"><label>团队码（发给同事，让他们凭码申请）</label>' +
+            '<div class="team-code-row"><code class="team-code" id="team-code">' + esc(t.code || '—') + '</code>' +
+            '<button class="btn btn-sm" data-act="copy-team-code">复制</button>' +
+            (owner ? '<button class="btn btn-sm" data-act="team-code-reset">重置</button>' : '') + '</div>' +
+            '<div class="hint">3 位大写字母 + 6 位数字。重置后旧码立刻失效。</div></div>' +
+          (admin ? '<div class="list-row" style="padding:10px 0 0;border:0">' +
+            '<div class="grow"><div class="nm">允许凭码直接加入</div><div class="sub">' +
+              (t.allow_direct ? '已开启：拿到团队码的人不用审批就能进' : '已关闭：需要管理员审批（推荐）') + '</div></div>' +
+            '<label class="switch"><input type="checkbox" data-act="team-allow-direct"' + (t.allow_direct ? ' checked' : '') + (owner ? '' : ' disabled') + '><i></i></label>' +
+          '</div>' : '') +
+          (admin ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">' +
+            '<button class="btn btn-sm" data-act="team-rename">改团队名</button>' +
+            '</div>' : '') +
+        '</div>' +
+      '</div>' +
+
+      (admin
+        ? '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">加入申请（' + pending + '）</h3>' +
+            (pending ? '' : '<span class="hint">暂时没人申请</span>') + '</div>' +
+            (pending ? reqRows : '<div class="empty" style="padding:26px"><p>没有待审申请</p><span>同事提交申请后会出现在这里</span></div>') +
+          '</div>'
+        : '') +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">成员（' + members + '）</h3></div>' +
+        memberRows +
+      '</div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">退出 / 解散</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin:0 0 12px">退出后你就看不到这个团队的数据了；你的预约单会留在团队里。</p>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+          (owner ? '' : '<button class="btn btn-sm" data-act="team-leave">退出团队</button>') +
+          (owner ? '<button class="btn btn-sm btn-danger" data-act="team-dissolve">解散团队</button>' : '') +
+        '</div>' +
+        (owner ? '<p class="hint" style="margin:12px 0 0">解散会删除这个团队的全部预约、项目、人员和设置，且不可恢复。建议先导出备份。</p>' : '') +
+      '</div></div>';
+  }
+
+  /* ============================================================
+     设置：数据备份
+     ============================================================ */
+  function dataPane() {
+    const owner = state.profile.team_role === 'owner';
+    const cnt = {
+      profiles: state.profiles.length,
+      projects: state.projects.length,
+      appointments: state.appointments.length,
+      off: state.timeOff.length
+    };
+    return '<div class="card"><div class="card-head"><h3 class="card-title">导出备份</h3></div><div class="card-body">' +
+        '<div class="kv"><span>人员</span><b>' + cnt.profiles + ' 条</b></div>' +
+        '<div class="kv"><span>项目</span><b>' + cnt.projects + ' 条</b></div>' +
+        '<div class="kv"><span>预约单</span><b>' + cnt.appointments + ' 条</b></div>' +
+        '<div class="kv"><span>休息日</span><b>' + cnt.off + ' 条</b></div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">' +
+          '<button class="btn btn-primary btn-sm" data-act="export-json">导出 JSON（本团队）</button>' +
+          (owner ? '<button class="btn btn-sm" data-act="export-db">导出整库 .db</button>' : '') +
+        '</div>' +
+        '<p class="hint" style="margin:12px 0 0">' +
+          'JSON 只含本团队的数据，适合换服务器、换团队时搬数据；' +
+          (owner ? '.db 是完整数据库文件（含所有团队），适合整机备份。' : '整库 .db 含所有团队数据，只有团队统筹能下载。') +
+        '</p>' +
+      '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">导入 / 恢复</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin:0 0 12px">' +
+          '支持 <b>JSON 备份</b>（合并进本团队，不会删已有数据）、<b>.db</b>（整库恢复，覆盖全部数据，仅团队统筹）、' +
+          '<b>.xlsx / .csv</b>（表格导入预约单或人员名单）。上传后先给预览，确认了才写库。' +
+        '</p>' +
+        '<input type="file" id="import-file" class="input" accept=".json,.db,.sqlite,.sqlite3,.csv,.tsv,.txt,.xlsx" style="padding:9px">' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">' +
+          '<button class="btn btn-primary btn-sm" data-act="import-preview">上传并预览</button>' +
+        '</div>' +
+        '<div id="import-result" style="margin-top:14px"></div>' +
+      '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">表格怎么填</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin:0 0 8px"><b>预约单表</b>（第一行是表头，列名认这些）：<br>' +
+          '日期（必填，2026-11-24 / 2026/11/24 / 11月24日 都行）、时段（上午/下午/晚上/全天）、项目、维修人员、地址、报修内容、联系人、联系电话、状态、优先级、备注</p>' +
+        '<p class="hint" style="margin:0 0 8px"><b>人员表</b>：姓名（必填）、手机号（11 位）、邮箱、身份（维修人员/预约人/统筹管理员）、PIN（留空默认 1234）</p>' +
+        '<p class="hint" style="margin:0">表格里出现的新项目、新维修人员会自动建档；同一个人同一天同一时段重复的行会被跳过。</p>' +
+      '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint" style="margin:0">' +
+        '服务端每次导出/恢复都会在数据目录的 <b>backups/</b> 里留一份快照，恢复失败也不会丢原库。' +
+      '</p></div></div>';
+  }
+
+  /* ============================================================
+     设置：登录方式（微信）
+     ============================================================ */
+  function loginPane() {
+    const s = state.wxSettings || {};
+    const wx = state.wechat || {};
+    const setMark = v => v ? ' <span class="tag tag-已确认">已保存</span>' : '';
+    return '<div class="card"><div class="card-head"><h3 class="card-title">微信登录</h3>' +
+        '<span class="tag ' + ((wx.mp || wx.qr) ? 'tag-已确认' : 'tag-已取消') + '">' +
+          ((wx.mp || wx.qr) ? '已启用' : '未配置') + '</span></div>' +
+      '<div class="card-body">' +
+        '<p class="hint" style="margin:0 0 14px">' +
+          '两种入口用两套 AppID：<b>公众号网页授权</b>用于「在微信里打开直接登录」，<b>开放平台网站应用</b>用于「电脑上扫码登录」。' +
+          '两边绑到同一个开放平台账号后，同一个人用哪种方式进来都是同一个账号。' +
+        '</p>' +
+
+        '<h4 style="margin:18px 0 10px;font-size:13.5px">① 公众号（微信内一键登录）</h4>' +
+        '<div class="field"><label>公众号 AppID</label>' +
+          '<input class="input" id="wx-mp-appid" value="' + esc(s.wx_mp_appid || '') + '" placeholder="wx开头的 18 位"></div>' +
+        '<div class="field"><label>AppSecret' + setMark(s.wx_mp_secret_set) + '</label>' +
+          '<input class="input" type="password" id="wx-mp-secret" value="" autocomplete="new-password" placeholder="' +
+            (s.wx_mp_secret_set ? '已保存，留空则不修改' : '公众号后台 → 开发 → 基本配置') + '"></div>' +
+
+        '<h4 style="margin:18px 0 10px;font-size:13.5px">② 开放平台网站应用（电脑扫码）</h4>' +
+        '<div class="field"><label>网站应用 AppID</label>' +
+          '<input class="input" id="wx-qr-appid" value="' + esc(s.wx_qr_appid || '') + '" placeholder="wx开头的 18 位"></div>' +
+        '<div class="field"><label>AppSecret' + setMark(s.wx_qr_secret_set) + '</label>' +
+          '<input class="input" type="password" id="wx-qr-secret" value="" autocomplete="new-password" placeholder="' +
+            (s.wx_qr_secret_set ? '已保存，留空则不修改' : '开放平台 → 网站应用 → 开发信息') + '"></div>' +
+
+        '<div class="field"><label>授权回调地址（填到微信后台，必须完全一致）</label>' +
+          '<div class="team-code-row"><code class="team-code" style="font-size:12.5px">' + esc((state.wxSettings && state.wxSettings.callback) || (location.origin + '/api/auth/wechat/callback')) + '</code>' +
+          '<button class="btn btn-sm" data-act="copy-callback">复制</button></div></div>' +
+
+        '<button class="btn btn-primary btn-sm" data-act="save-wechat">保存</button>' +
+      '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">怎么申请（大约 1–3 天）</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin:0 0 8px"><b>扫码登录：</b>打开 <b>open.weixin.qq.com</b> → 管理中心 → 网站应用 → 创建应用（要企业主体，需 300 元认证费）→ 审核通过后拿到 AppID / AppSecret → 把上面的回调地址填到「授权回调域」（只填域名，如 <b>crewgo.cn</b>）。</p>' +
+        '<p class="hint" style="margin:0 0 8px"><b>微信内登录：</b>需要一个<b>已认证的服务号</b> → 公众号后台 → 设置与开发 → 基本配置（拿 AppID/AppSecret）→ 公众号设置 → 功能设置 → 「网页授权域名」填同一个域名。</p>' +
+        '<p class="hint" style="margin:0">没配置也能用：姓名 + PIN 登录一直可用，微信只是更省事。域名必须已备案且能公网访问，微信回调不支持内网地址。</p>' +
+      '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:12px">' +
+        '<div><div class="nm" style="font-weight:550">我的微信</div><div class="sub">' +
+          (state.profile.wx_bound ? '已绑定，可以在微信里一键登录' : '还没绑定') + '</div></div>' +
+        (state.profile.wx_bound
+          ? '<button class="btn btn-sm btn-danger" data-act="wx-unbind">解除绑定</button>'
+          : '<button class="btn btn-sm btn-primary" data-act="wx-bind">去绑定</button>') +
+      '</div></div>';
+  }
+
   function notifyPane() {
     const s = state.settings || {};
     const adminPart = isAdmin()
@@ -929,7 +1306,7 @@
       '<form data-form="save-me">' +
         '<div class="form-row">' +
           '<div class="field"><label>姓名</label><input class="input" name="name" value="' + esc(p.name) + '" required maxlength="20"></div>' +
-          '<div class="field"><label>手机号</label><input class="input" name="phone" value="' + esc(p.phone || '') + '" maxlength="20"></div>' +
+          '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" inputmode="numeric" value="' + esc(p.phone || '') + '" maxlength="20" placeholder="11 位"></div>' +
         '</div>' +
         '<div class="field"><label>邮箱</label><input class="input" type="email" name="email" value="' + esc(p.email || '') + '" placeholder="用于收派单和出发提醒"></div>' +
         '<div class="field"><label>我的排期颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap">' +
@@ -950,10 +1327,41 @@
         '<div class="hint" style="margin-bottom:10px">' + PIN_TIP + '</div>' +
         '<button class="btn btn-sm btn-primary" data-act="change-pin">保存新 PIN</button>' +
       '</div></div>' +
+      myOffCard(p) +
+      wxBindCard(p) +
       '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center">' +
         '<div><div class="nm" style="font-weight:550">退出登录</div><div class="sub">换一个账号登录</div></div>' +
         '<button class="btn btn-danger btn-sm" data-act="logout">退出</button>' +
       '</div></div>';
+  }
+
+  /** 我的休息日：自己就能排，排了那天不会被派单 */
+  function myOffCard(p) {
+    const list = upcomingOff(p.id);
+    const rows = list.slice(0, 12).map(o =>
+      '<div class="list-row">' +
+        '<div class="grow"><div class="nm">' + esc(o.off_date) + ' · ' + esc(dayLabel(o.off_date).split(' ')[1] || '') +
+          (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div>' +
+          '<div class="sub">这天不接单</div></div>' +
+        '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' +
+      '</div>').join('');
+    return '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">我的休息日</h3>' +
+        '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">＋ 排休</button></div>' +
+      (rows || '<div class="card-body"><p class="hint" style="margin:0">还没排休。休息日里团队不会把你排进预约单。</p></div>') +
+      '</div>';
+  }
+
+  /** 微信绑定状态 */
+  function wxBindCard(p) {
+    const wx = state.wechat || {};
+    if (!wx.mp && !wx.qr) return '';
+    return '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:12px">' +
+      '<div><div class="nm" style="font-weight:550">微信' + (p.wx_bound ? '（已绑定）' : '') + '</div>' +
+        '<div class="sub">' + (p.wx_bound ? '在微信里打开可以一键登录' : '绑定后不用记 PIN，微信里点一下就进来') + '</div></div>' +
+      (p.wx_bound
+        ? '<button class="btn btn-sm btn-danger" data-act="wx-unbind">解除绑定</button>'
+        : '<button class="btn btn-sm btn-primary" data-act="wx-bind">去绑定</button>') +
+    '</div></div>';
   }
 
   /* ============================================================
@@ -981,6 +1389,7 @@
             SLOTS.map(s => '<option' + ((a.time_slot || '上午') === s ? ' selected' : '') + '>' + s + '</option>').join('') +
           '</select></div>' +
         '</div>' +
+        '<div id="appt-check" class="notice hidden" style="margin:0 0 14px"></div>' +
         '<div class="field"><label>维修地址</label><input class="input" name="address" value="' + esc(a.address || '') + '" placeholder="小区 / 楼栋 / 门牌"></div>' +
         '<div class="field"><label>报修内容</label><textarea class="textarea" name="content" placeholder="哪里坏了，需要带什么材料">' + esc(a.content || '') + '</textarea></div>' +
         '<div class="form-row">' +
@@ -1005,7 +1414,7 @@
 
   function openApptModal(a) {
     if (!a) {
-      openModal(apptFormHtml(null));
+      openModal(apptFormHtml(null), { onMount: mountApptForm });
       return;
     }
     const canDel = isAdmin() || a.owner_id === state.uid;
@@ -1072,27 +1481,128 @@
     };
   }
 
+  /* ---------- 冲突检测：同一人同一时段只能有一单，休息日不能派 ---------- */
+  function apptConflictNow() {
+    const f = $('form[data-form="appt"]');
+    if (!f) return null;
+    const g = n => (f.elements[n] ? String(f.elements[n].value || '').trim() : '');
+    const date = g('visit_date');
+    const slot = g('time_slot') || '上午';
+    const techId = g('tech_id');
+    const tech = techId ? profileById(techId) : null;
+    if (!date || !tech) return null;
+    const excludeId = Number(f.getAttribute('data-id')) || 0;
+    const conflicts = state.appointments.filter(a =>
+      a.visit_date === date &&
+      a.status !== '已取消' &&
+      Number(a.id) !== excludeId &&
+      (a.tech_id ? String(a.tech_id) === String(tech.id) : a.tech_name === tech.name) &&
+      slotOverlap(a.time_slot, slot));
+    const off = state.timeOff.filter(o => o.profile_id === tech.id && o.off_date === date)[0] || null;
+    return { tech: tech, date: date, slot: slot, conflicts: conflicts, off: off };
+  }
+
+  function refreshApptCheck() {
+    const el = $('#appt-check');
+    if (!el) return;
+    const r = apptConflictNow();
+    if (!r || (!r.off && !r.conflicts.length)) {
+      el.className = 'notice hidden';
+      el.innerHTML = '';
+      return;
+    }
+    if (r.off) {
+      el.className = 'notice notice-warn';
+      el.innerHTML = '<b>' + esc(r.tech.name) + '</b> 在 ' + esc(dayLabel(r.date)) + ' 排了休息' +
+        (r.off.reason ? '（' + esc(r.off.reason) + '）' : '') + '，这天不能给他排单。';
+      return;
+    }
+    el.className = 'notice notice-warn';
+    el.innerHTML = '<b>时间冲突</b>：' + esc(r.tech.name) + ' 在 ' + esc(dayLabel(r.date)) + ' ' + esc(r.slot) + ' 已经有 ' +
+      r.conflicts.length + ' 单：<br>' +
+      r.conflicts.map(c => '· ' + esc(c.time_slot) + ' ' + esc(c.project_name || '') + ' ' + esc(c.address || c.content || '')).join('<br>');
+  }
+
+  function mountApptForm() {
+    const f = $('form[data-form="appt"]');
+    if (!f) return;
+    ['tech_id', 'visit_date', 'time_slot'].forEach(n => {
+      const el = f.elements[n];
+      if (!el) return;
+      el.addEventListener('change', refreshApptCheck);
+      el.addEventListener('input', refreshApptCheck);
+    });
+    refreshApptCheck();
+  }
+
+  /** 冲突确认文案：把已有单列清楚，让人知道自己在覆盖什么 */
+  function conflictText(r) {
+    if (r.off) {
+      return r.tech.name + ' 在 ' + dayLabel(r.date) + ' 排了休息' +
+        (r.off.reason ? '（' + r.off.reason + '）' : '') + '。\n\n确定要强制安排吗？';
+    }
+    return r.tech.name + ' 在 ' + dayLabel(r.date) + ' ' + r.slot + ' 已经有：\n' +
+      r.conflicts.map(c => '· ' + c.time_slot + ' ' + (c.project_name || '') + ' ' + (c.address || c.content || '')).join('\n') +
+      '\n\n同一时段安排两单可能会跑不过来，确定继续吗？';
+  }
+
   async function saveAppt(id) {
     const payload = readApptForm();
     if (!payload.visit_date) { toast('请选择上门日期'); return; }
     if (!payload.address && !payload.content) { toast('请填写地址或报修内容'); return; }
 
+    // 先在本地算一遍（数据都在手上，不用等网络）
+    const local = apptConflictNow();
+    let force = false;
+    if (local && (local.off || local.conflicts.length)) {
+      if (local.off && !isAdmin()) {
+        toast(local.tech.name + ' 在 ' + dayLabel(local.date) + ' 休息，不能排单', 4600);
+        return;
+      }
+      const ok = await confirmDialog(local.off ? '这天在休息' : '时间冲突', conflictText(local));
+      if (!ok) return;
+      force = true;
+    }
+
     const btn = $('[data-act="submit-appt"]');
     if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
 
+    const send = async withForce => {
+      const body = {
+        table: 'appointments',
+        action: id ? 'update' : 'insert',
+        values: payload,
+        filters: id ? [{ op: 'eq', col: 'id', val: Number(id) }] : [],
+        force: !!withForce
+      };
+      return window.__api('/api/db', { method: 'POST', body: JSON.stringify(body) });
+    };
+
     try {
-      let created = null;
-      if (id) {
-        payload.updated_at = new Date().toISOString();
-        const { data, error } = await db.from('appointments').update(payload).eq('id', Number(id)).select();
-        if (error) throw error;
-        if (!data || !data.length) throw new Error('没有权限修改这条预约');
-      } else {
-        payload.creator_name = state.profile.name;
-        const { data, error } = await db.from('appointments').insert(payload).select();
-        if (error) throw error;
-        created = data && data[0];
+      if (id) payload.updated_at = new Date().toISOString();
+      else payload.creator_name = state.profile.name;
+
+      let out;
+      try {
+        out = await send(force);
+      } catch (e) {
+        // 服务端兜底拦下了（比如别人刚抢了同一时段），把明细说清楚再决定
+        const detail = (e && e.body) || {};
+        if (e && e.status === 409 && !force) {
+          if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+          const ok = await confirmDialog(detail.off ? '这天在休息' : '时间冲突',
+            detail.error + (detail.conflicts && detail.conflicts.length
+              ? '\n\n已有：' + detail.conflicts.map(c => c.time_slot + ' ' + (c.address || c.project_name || '')).join('，')
+              : '') + '\n\n确定要继续吗？');
+          if (!ok) return;
+          if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+          out = await send(true);
+        } else throw e;
       }
+
+      const rows = (out && out.data) || [];
+      if (!rows.length) throw new Error('没有权限修改这条预约');
+      const created = id ? null : rows[0];
       closeModal();
       await loadAll();
       render();
@@ -1444,7 +1954,7 @@
 
     if (r.ok) {
       try {
-        const { data } = await db.from('settings').update({ last_digest_date: dateStr }).eq('id', 1).select();
+        const { data } = await db.from('settings').update({ last_digest_date: dateStr }).select();
         if (data && data[0]) state.settings = data[0];
       } catch (e) { /* 非管理员更新失败则下次再发 */ }
     }
@@ -1535,8 +2045,8 @@
 
     switch (act) {
       case 'close-modal': closeModal(); break;
-      case 'new-appt': openModal(apptFormHtml(null)); break;
-      case 'new-appt-day': state.board.day = el.getAttribute('data-date'); openModal(apptFormHtml(null)); break;
+      case 'new-appt': openModal(apptFormHtml(null), { onMount: mountApptForm }); break;
+      case 'new-appt-day': state.board.day = el.getAttribute('data-date'); openModal(apptFormHtml(null), { onMount: mountApptForm }); break;
       case 'open-appt': {
         const a = state.appointments.filter(x => String(x.id) === String(id))[0];
         if (a) openApptModal(a);
@@ -1544,7 +2054,7 @@
       }
       case 'edit-appt': {
         const a = state.appointments.filter(x => String(x.id) === String(id))[0];
-        if (a) openModal(apptFormHtml(a));
+        if (a) openModal(apptFormHtml(a), { onMount: mountApptForm });
         break;
       }
       case 'submit-appt': saveAppt(el.getAttribute('data-id')); break;
@@ -1569,17 +2079,33 @@
       case 'export-csv': exportCsv(); break;
       case 'settings-tab': state.settingsTab = el.getAttribute('data-tab'); render(); break;
       case 'logout': doLogout(); break;
-      case 'login-mode': e.preventDefault(); state.loginMode = el.getAttribute('data-mode'); showLogin(); break;
-      case 'oauth': startOAuth(el.getAttribute('data-provider')); break;
-      case 'send-code': sendCode(el); break;
-      case 'claim': claimProfile(el.getAttribute('data-id')); break;
-      case 'pick-role': {
-        $$('.role-card').forEach(c => c.classList.remove('active'));
-        el.classList.add('active');
-        const f = $('form[data-form="onboard-new"]');
-        if (f) f.elements.role.value = el.getAttribute('data-role');
-        break;
-      }
+      case 'auth-view': e.preventDefault(); state.loginMode = el.getAttribute('data-view') === 'setup' ? 'setup' : 'login'; showAuth(el.getAttribute('data-view')); break;
+      case 'wx-login': startWechat(el.getAttribute('data-mode') || 'qr', false); break;
+      case 'wx-bind': startWechat(inWeChat() && state.wechat.mp ? 'mp' : 'qr', true); break;
+      case 'wx-banner-hide': state.wxBannerHidden = true; render(); break;
+      case 'wx-unbind': unbindWechat(); break;
+      case 'team-mode': state.teamMode = el.getAttribute('data-mode'); showAuth('team'); break;
+      case 'team-refresh': refreshTeamGate(); break;
+      case 'team-cancel': cancelTeamRequest(); break;
+      case 'team-rename': renameTeam(); break;
+      case 'team-code-reset': resetTeamCode(); break;
+      case 'copy-team-code': copyText((state.team && state.team.code) || ''); break;
+      case 'copy-callback': copyText((state.wxSettings && state.wxSettings.callback) || (location.origin + '/api/auth/wechat/callback')); break;
+      case 'req-approve': decideRequest(el.getAttribute('data-id'), true); break;
+      case 'req-reject': decideRequest(el.getAttribute('data-id'), false); break;
+      case 'member-role': setMemberRole(el.getAttribute('data-id'), el.getAttribute('data-role')); break;
+      case 'member-owner': transferOwner(el.getAttribute('data-id')); break;
+      case 'member-remove': removeMember(el.getAttribute('data-id')); break;
+      case 'team-leave': leaveTeam(); break;
+      case 'team-dissolve': dissolveTeam(); break;
+      case 'time-off': openTimeOffModal(el.getAttribute('data-id')); break;
+      case 'save-time-off': saveTimeOff(el.getAttribute('data-id')); break;
+      case 'del-time-off': removeTimeOff(el.getAttribute('data-id')); break;
+      case 'save-wechat': saveWechatCfg(); break;
+      case 'export-json': downloadBackup('json'); break;
+      case 'export-db': downloadBackup('db'); break;
+      case 'import-preview': previewImport(); break;
+      case 'import-commit': commitImport(el.getAttribute('data-file')); break;
       case 'add-project': openProjectModal(null); break;
       case 'edit-project': openProjectModal(projectById(id)); break;
       case 'del-project': delProject(id); break;
@@ -1622,6 +2148,7 @@
       render();
       return;
     }
+    if (t.getAttribute('data-act') === 'team-allow-direct') { setAllowDirect(t.checked); return; }
     if (t.getAttribute('data-act') === 'toggle-notify') { saveNotify(t.checked); return; }
     if (t.getAttribute('data-act') === 'toggle-email') { saveEmail(t.checked); return; }
     if (t.getAttribute('data-act') === 'on-project') {
@@ -1656,14 +2183,20 @@
     e.preventDefault();
     if (kind === 'login') submitLogin(f);
     else if (kind === 'setup') submitSetup(f);
+    else if (kind === 'register') submitRegister(f);
+    else if (kind === 'profile-setup') submitProfileSetup(f);
+    else if (kind === 'team-join') submitTeamJoin(f);
+    else if (kind === 'team-create') submitTeamCreate(f);
     else if (kind === 'appt') saveAppt(f.getAttribute('data-id'));
-    else if (kind === 'onboard-new') submitOnboardNew(f);
     else if (kind === 'save-me') saveMe(f);
     else if (kind === 'project') saveProject(f);
     else if (kind === 'person') savePerson(f);
   }
 
   /* ---------- 登录动作（本地账号：姓名 + PIN） ---------- */
+  /* ---------- 登录 / 注册 / 团队门动作 ---------- */
+  const normCodeInput = v => String(v === null || v === undefined ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
+
   async function submitLogin(f) {
     const name = (f.elements.name.value || '').trim();
     const pin = normPin(f.elements.pin.value);
@@ -1675,112 +2208,476 @@
     const { data, error } = await cloud.auth.signIn(name, pin);
     if (error) {
       if (btn) { btn.disabled = false; btn.textContent = '登录'; }
-      // 一个人都没建时，登录失败九成是「还没初始化」，直接把用户带到初始化页
       try {
-        const st = await fetch('/api/auth/status').then(r => r.json());
+        const st = await cloud.auth.status();
         if (st && st.initialized === false) {
           state.loginMode = 'setup';
           showLogin('系统里还没有任何账号，请先创建统筹管理员。');
           return;
         }
-      } catch (e) { /* 云端版没有这个接口，忽略 */ }
+      } catch (e) { /* 忽略 */ }
       toast('登录失败：' + (error.message || '请重试'), 3600);
       return;
     }
-    await afterAuth(data);
+    await boot();
   }
 
   async function submitSetup(f) {
     const name = (f.elements.name.value || '').trim();
-    const pin = (f.elements.pin.value || '').trim();
-    const pin2 = (f.elements.pin2.value || '').trim();
+    const phone = (f.elements.phone ? String(f.elements.phone.value || '') : '').trim();
+    const teamName = (f.elements.teamName ? String(f.elements.teamName.value || '') : '').trim();
+    const pin = normPin(f.elements.pin.value);
+    const pin2 = normPin(f.elements.pin2.value);
     if (!name) { toast('请填写姓名'); return; }
     const pe = pinError(pin);
     if (pe) { toast(pe); return; }
     if (pin !== pin2) { toast('两次输入的 PIN 不一致'); return; }
+    if (phone) { const ph = phoneError(phone); if (ph) { toast(ph); return; } }
 
     const btn = f.querySelector('button[type="submit"]');
     if (btn) { btn.disabled = true; btn.textContent = '创建中…'; }
-    const { data, error } = await cloud.auth.setup(name, pin);
+    const { data, error } = await cloud.auth.setup(name, pin, phone, teamName);
     if (error) {
-      if (btn) { btn.disabled = false; btn.textContent = '创建管理员账号'; }
-      toast('创建失败：' + (error.message || '请重试'), 4000);
+      if (btn) { btn.disabled = false; btn.textContent = '创建团队并进入'; }
+      toast('创建失败：' + (error.message || '请重试'), 4200);
       return;
     }
     state.loginMode = 'login';
-    await afterAuth(data);
-    toast('欢迎，' + name + '。你是统筹管理员');
+    await boot();
+    toast('欢迎，' + name + '。你是团队统筹', 3200);
+    if (data && data.team) setTimeout(() => toast('团队码 ' + data.team.code + '，发给同事即可加入', 5200), 1600);
   }
 
-  // 本地版没有短信，保留同名占位，避免旧引用报错
-  async function sendCode() { toast('本地版不支持短信登录，请用姓名 + PIN'); }
-
-  async function startOAuth(provider) {
-    const { data, error } = await cloud.auth.signInWithOAuth({
-      provider: provider,
-      redirectTo: location.origin
-    });
-    if (error) { showLogin('无法发起登录：' + (error.message || '该登录方式暂不可用')); return; }
-    location.assign(data.url);
-  }
-
-  async function afterAuth(result) {
-    let session = result && result.session ? result.session : result;
-    if (!session || !session.user) {
-      const r = await cloud.auth.getSession();
-      session = r.data;
-    }
-    if (!session) { showLogin('登录状态获取失败，请重试'); return; }
-    state.session = session;
-    state.user = session.user || {};
-    state.uid = await resolveUid(state.user);
-    const prof = await fetchMyProfile().catch(() => null);
-    if (!prof) { await startOnboarding(); return; }
-    state.profile = prof;
-    await enterApp();
-  }
-
-  async function claimProfile(id) {
-    const p = profileById(id);
-    if (!p) return;
-    const { data, error } = await db.from('profiles').update({ user_id: state.uid }).eq('id', id).is('user_id', null).select();
-    if (error) { toast('绑定失败：' + (error.message || '请重试')); return; }
-    if (!data || !data.length) { toast('这条档案已被占用，请刷新后重试'); return; }
-    const prof = await fetchMyProfile();
-    if (!prof) { toast('绑定失败，请重试'); return; }
-    state.profile = prof;
-    await enterApp();
-    toast('已绑定到 ' + prof.name);
-  }
-
-  async function submitOnboardNew(f) {
+  async function submitRegister(f) {
     const name = (f.elements.name.value || '').trim();
-    const phone = (f.elements.phone.value || '').trim();
-    const role = (f.elements.role.value || 'tech').trim();
+    const phone = (f.elements.phone ? String(f.elements.phone.value || '') : '').trim();
+    const pin = normPin(f.elements.pin.value);
+    const pin2 = normPin(f.elements.pin2.value);
     if (!name) { toast('请填写姓名'); return; }
+    const pe = pinError(pin);
+    if (pe) { toast(pe); return; }
+    if (pin !== pin2) { toast('两次输入的 PIN 不一致'); return; }
+    if (phone) { const ph = phoneError(phone); if (ph) { toast(ph); return; } }
+
     const btn = f.querySelector('button[type="submit"]');
-    if (btn) { btn.disabled = true; btn.textContent = '处理中…'; }
-    const { data, error } = await db.from('profiles').insert({
-      id: 'p_' + Math.random().toString(36).slice(2, 10),
-      user_id: state.uid,
-      name: name,
-      phone: phone || null,
-      role: role,
-      color: PALETTE[state.profiles.length % PALETTE.length]
-    }).select();
+    if (btn) { btn.disabled = true; btn.textContent = '注册中…'; }
+    const { error } = await cloud.auth.register(name, pin, phone);
     if (error) {
-      if (btn) { btn.disabled = false; btn.textContent = '完成，进入系统'; }
-      toast('创建失败：' + (error.message || '请重试'));
+      if (btn) { btn.disabled = false; btn.textContent = '注册'; }
+      toast('注册失败：' + (error.message || '请重试'), 4200);
       return;
     }
-    state.profile = data && data[0];
-    await enterApp();
-    toast('欢迎，' + name);
+    await boot();
+    toast('注册成功，接着用团队码申请加入', 3600);
   }
 
-  async function doLogout() {
+  /** 微信账号补资料：姓名 + 手机号，必须填完 */
+  async function submitProfileSetup(f) {
+    const name = (f.elements.name.value || '').trim();
+    const phone = (f.elements.phone.value || '').trim();
+    if (!name) { toast('请填写姓名'); return; }
+    const ph = phoneError(phone);
+    if (ph) { toast(ph); return; }
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    const { data, error } = await cloud.auth.updateProfile(name, phone);
+    if (error) {
+      if (btn) { btn.disabled = false; btn.textContent = '保存并继续'; }
+      toast('保存失败：' + (error.message || '请重试'), 4200);
+      return;
+    }
+    if (data && data.user) state.user = data.user;
+    await boot();
+    toast('资料已补全');
+  }
+
+  async function submitTeamJoin(f) {
+    const code = normCodeInput(f.elements.code.value);
+    const message = (f.elements.message ? String(f.elements.message.value || '') : '').trim();
+    if (!code) { toast('请填写团队码'); return; }
+    if (code.length !== 9) { toast('团队码是 3 位字母 + 6 位数字，共 9 位'); return; }
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = '提交中…'; }
+    try {
+      const out = await window.__api('/api/team/join', { method: 'POST', body: JSON.stringify({ code, message }) });
+      if (out && out.joined) {
+        await boot();
+        toast('已加入「' + (out.team ? out.team.name : '团队') + '」');
+        return;
+      }
+      state.pending = { team_name: out.team ? out.team.name : '', team_code: out.team ? out.team.code : '' };
+      showAuth('pending');
+      toast('申请已提交，等管理员同意');
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '提交申请'; }
+      toast('加入失败：' + e.message, 4200);
+    }
+  }
+
+  async function submitTeamCreate(f) {
+    const name = (f.elements.name.value || '').trim();
+    if (name.length < 2) { toast('团队名称至少 2 个字'); return; }
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = '创建中…'; }
+    try {
+      const out = await window.__api('/api/team/create', { method: 'POST', body: JSON.stringify({ name }) });
+      await boot();
+      const code = out && out.team ? out.team.code : '';
+      toast('团队已创建' + (code ? '，团队码 ' + code : ''), 4600);
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '创建团队'; }
+      toast('创建失败：' + e.message, 4200);
+    }
+  }
+
+  async function refreshTeamGate() {
+    try {
+      const me = await window.__api('/api/auth/me');
+      state.pending = me.pending || null;
+      if (me.user && me.user.team_id) { await boot(); return; }
+      if (!state.pending) { showAuth('team', '申请已经不在了，重新输入团队码试试'); return; }
+      showAuth('pending');
+      toast('还没通过，稍后再试或催一下管理员');
+    } catch (e) { toast('刷新失败：' + e.message); }
+  }
+
+  async function cancelTeamRequest() {
+    try {
+      await window.__api('/api/team/cancel', { method: 'POST', body: '{}' });
+      state.pending = null;
+      showAuth('team', '申请已撤回', true);
+    } catch (e) { toast(e.message); }
+  }
+
+  async function unbindWechat() {
+    const ok = await confirmDialog('解除微信绑定', '解除后就不能用微信一键登录了，仍然可以用姓名 + PIN 登录。');
+    if (!ok) return;
+    try {
+      await window.__api('/api/auth/wechat/unbind', { method: 'POST', body: '{}' });
+      await loadAll(); render();
+      toast('已解除绑定');
+    } catch (e) { toast('解绑失败：' + e.message); }
+  }
+
+  /* ---------- 团队管理动作 ---------- */
+  async function teamPost(path, body) {
+    return window.__api(path, { method: 'POST', body: JSON.stringify(body || {}) });
+  }
+
+  async function decideRequest(id, approve) {
+    try {
+      const r = await teamPost('/api/team/requests/decide', { id: Number(id), approve: !!approve });
+      await loadAll(); render();
+      toast(r.approved ? '已同意，对方刷新就能进来' : '已拒绝');
+    } catch (e) { toast('操作失败：' + e.message, 4200); }
+  }
+
+  async function setMemberRole(id, role) {
+    const label = role === 'admin' ? '设为管理员' : '降为成员';
+    const ok = await confirmDialog(label, '确定要' + label + '吗？管理员可以审批入团申请、管理项目和人员。');
+    if (!ok) return;
+    try {
+      await teamPost('/api/team/members/role', { id, role });
+      await loadAll(); render();
+      toast('已' + label);
+    } catch (e) { toast('操作失败：' + e.message, 4200); }
+  }
+
+  async function transferOwner(id) {
+    const p = profileById(id);
+    if (!p) return;
+    const ok = await confirmDialog('转让队长', '把「团队统筹」转给 ' + p.name + '？转让后你变成普通管理员，只有对方能解散团队和重置团队码。');
+    if (!ok) return;
+    try {
+      await teamPost('/api/team/owner', { id });
+      await boot();
+      toast('已转让给 ' + p.name);
+    } catch (e) { toast('转让失败：' + e.message, 4200); }
+  }
+
+  async function removeMember(id) {
+    const p = profileById(id);
+    const ok = await confirmDialog('移出团队', '「' + (p ? p.name : id) + '」会离开团队，看不到团队数据。他的预约单会留在团队里。');
+    if (!ok) return;
+    try {
+      await teamPost('/api/team/members/remove', { id });
+      await loadAll(); render();
+      toast('已移出');
+    } catch (e) { toast('移除失败：' + e.message, 4200); }
+  }
+
+  async function leaveTeam() {
+    const ok = await confirmDialog('退出团队', '退出后你就看不到这个团队的数据了，需要用团队码重新申请才能回来。');
+    if (!ok) return;
+    try {
+      await teamPost('/api/team/leave');
+      await boot();
+    } catch (e) { toast('退出失败：' + e.message, 4200); }
+  }
+
+  async function dissolveTeam() {
+    const name = (state.team && state.team.name) || '';
+    const ok = await confirmDialog('解散团队', '这会删除「' + name + '」的全部预约、项目、人员和设置，且无法恢复。\n建议先去「数据备份」导出。确定解散吗？');
+    if (!ok) return;
+    const typed = window.prompt('输入团队名称以确认解散：' + name);
+    if (typed === null) return;
+    try {
+      await teamPost('/api/team/dissolve', { name: typed });
+      await boot();
+      toast('团队已解散');
+    } catch (e) { toast('解散失败：' + e.message, 4600); }
+  }
+
+  async function renameTeam() {
+    const cur = (state.team && state.team.name) || '';
+    const name = window.prompt('团队名称', cur);
+    if (!name || name.trim() === cur) return;
+    try {
+      await teamPost('/api/team/rename', { name: name.trim() });
+      state.team.name = name.trim();
+      render();
+      toast('已改名');
+    } catch (e) { toast('改名失败：' + e.message, 4200); }
+  }
+
+  async function resetTeamCode() {
+    const ok = await confirmDialog('重置团队码', '重置后旧团队码立刻失效，已经发出去的码就加不进来了。确定吗？');
+    if (!ok) return;
+    try {
+      const r = await teamPost('/api/team/code/reset');
+      if (state.team) state.team.code = r.code;
+      render();
+      toast('新团队码：' + r.code, 6000);
+    } catch (e) { toast('重置失败：' + e.message, 4200); }
+  }
+
+  async function setAllowDirect(allow) {
+    try {
+      await teamPost('/api/team/allow-direct', { allow: !!allow });
+      if (state.team) state.team.allow_direct = !!allow;
+      render();
+      toast(allow ? '已开启：有团队码就能直接加入' : '已关闭：需要管理员审批');
+    } catch (e) {
+      toast('保存失败：' + e.message, 4200);
+      await loadAll(); render();
+    }
+  }
+
+  async function saveWechatCfg() {
+    const val = id => { const el = $('#' + id); return el ? el.value.trim() : ''; };
+    const payload = {
+      wx_mp_appid: val('wx-mp-appid'),
+      wx_mp_secret: val('wx-mp-secret'),
+      wx_qr_appid: val('wx-qr-appid'),
+      wx_qr_secret: val('wx-qr-secret')
+    };
+    try {
+      const r = await teamPost('/api/settings/wechat', payload);
+      state.wechat = r.enabled || state.wechat;
+      await loadAll(); render();
+      toast('微信登录配置已保存');
+    } catch (e) { toast('保存失败：' + e.message, 4200); }
+  }
+
+  /* ---------- 休息日 ---------- */
+  function openTimeOffModal(profileId) {
+    const p = profileById(profileId) || state.profile;
+    const t = todayStr();
+    const list = upcomingOff(p.id);
+    const rows = list.map(o =>
+      '<div class="list-row">' +
+        '<div class="grow"><div class="nm">' + esc(o.off_date) + (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div></div>' +
+        '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' +
+      '</div>').join('');
+    openModal(modalShell('排休 · ' + p.name,
+      '<div class="form-row">' +
+        '<div class="field"><label>从</label><input class="input" type="date" id="off-from" value="' + t + '"></div>' +
+        '<div class="field"><label>到</label><input class="input" type="date" id="off-to" value="' + t + '"></div>' +
+      '</div>' +
+      '<div class="field"><label>原因（选填）</label><input class="input" id="off-reason" maxlength="30" placeholder="如：调休 / 病假 / 年假"></div>' +
+      '<p class="hint" style="margin:-4px 0 12px">休息日里这个人不会被排进预约单，日历上会标出来。</p>' +
+      (rows ? '<div class="group-title">已排的休息日<span class="count">' + list.length + ' 天</span></div>' + rows : ''),
+      '<button class="btn" data-act="close-modal">关闭</button>' +
+      '<button class="btn btn-primary" data-act="save-time-off" data-id="' + esc(p.id) + '">保存</button>'
+    ));
+  }
+
+  async function saveTimeOff(profileId) {
+    const from = ($('#off-from') || {}).value;
+    const to = ($('#off-to') || {}).value || from;
+    const reason = ($('#off-reason') || {}).value || '';
+    if (!from) { toast('请选择开始日期'); return; }
+    try {
+      const r = await teamPost('/api/schedule/time-off', { profile_id: profileId, from, to, reason });
+      closeModal();
+      await loadAll(); render();
+      if (r.added) toast('已排休 ' + r.added + ' 天' + (r.added < r.days ? '（其余已经排过）' : ''));
+      else toast('这几天本来就排了休息');
+    } catch (e) { toast('排休失败：' + e.message, 4200); }
+  }
+
+  async function removeTimeOff(id) {
+    try {
+      await teamPost('/api/schedule/time-off/remove', { id: Number(id) });
+      await loadAll();
+      render();
+      toast('已取消这天的休息');
+    } catch (e) { toast('取消失败：' + e.message, 4200); }
+  }
+
+  /* ---------- 备份 / 导入 ---------- */
+  let pendingImportFile = null;
+
+  async function downloadBackup(fmt) {
+    toast('正在打包…');
+    try {
+      const res = await fetch('/api/backup/export?format=' + fmt, {
+        headers: { Authorization: 'Bearer ' + window.__auth.getToken() }
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => null);
+        throw new Error((j && j.error) || ('HTTP ' + res.status));
+      }
+      const blob = await res.blob();
+      const cd = res.headers.get('content-disposition') || '';
+      const m = cd.match(/filename\*=UTF-8''([^;]+)/);
+      const name = m ? decodeURIComponent(m[1]) : ('速派备份.' + (fmt === 'db' ? 'db' : 'json'));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      toast('已下载 ' + name);
+    } catch (e) { toast('导出失败：' + e.message, 4600); }
+  }
+
+  async function previewImport() {
+    const input = $('#import-file');
+    const file = input && input.files && input.files[0];
+    const out = $('#import-result');
+    if (!file) { toast('先选一个文件'); return; }
+    if (file.size > 64 * 1024 * 1024) { toast('文件太大，单次最多 64MB'); return; }
+    pendingImportFile = file;
+    if (out) out.innerHTML = '<p class="hint">正在解析 ' + esc(file.name) + '…</p>';
+    try {
+      const res = await fetch('/api/backup/import?filename=' + encodeURIComponent(file.name) + '&dry=1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + window.__auth.getToken() },
+        body: file
+      });
+      const j = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((j && j.error) || ('HTTP ' + res.status));
+      if (out) out.innerHTML = importReportHtml(j, file.name);
+    } catch (e) {
+      pendingImportFile = null;
+      if (out) out.innerHTML = '<div class="notice notice-warn">解析失败：' + esc(e.message) + '</div>';
+    }
+  }
+
+  function importReportHtml(r, filename) {
+    const head = '<div class="notice" style="margin-bottom:12px"><b>' + esc(filename) + '</b> 解析结果</div>';
+    if (r.kind === 'db') {
+      const mb = (r.size / 1024 / 1024).toFixed(2);
+      return head +
+        '<div class="kv"><span>类型</span><b>SQLite 整库文件（' + mb + ' MB）</b></div>' +
+        '<div class="notice notice-warn" style="margin:12px 0">整库恢复会覆盖服务器上<b>所有团队</b>的数据，恢复前会自动备份当前库。恢复后需要重新登录。</div>' +
+        '<button class="btn btn-primary btn-sm" data-act="import-commit" data-file="' + esc(filename) + '">确认整库恢复</button>';
+    }
+    const rows = [];
+    if (r.kind === 'appointments') {
+      rows.push(['总行数', r.total], ['将新增', r.add], ['重复跳过', r.skip], ['认不出日期', r.bad]);
+    } else if (r.kind === 'profiles') {
+      rows.push(['总行数', r.total], ['将新增', r.add], ['将更新', r.update], ['跳过', r.bad]);
+    } else if (r.kind === 'json') {
+      return head +
+        '<div class="kv"><span>人员</span><b>新增 ' + r.profiles.add + ' · 更新 ' + r.profiles.update + '</b></div>' +
+        '<div class="kv"><span>项目</span><b>新增 ' + r.projects.add + ' · 更新 ' + r.projects.update + '</b></div>' +
+        '<div class="kv"><span>预约单</span><b>新增 ' + (r.appointments ? r.appointments.add : 0) + ' · 跳过 ' + (r.appointments ? r.appointments.skip : 0) + '</b></div>' +
+        '<div class="notice" style="margin:12px 0">JSON 是合并导入：不会删除现有数据，同名的人和项目会更新。</div>' +
+        '<button class="btn btn-primary btn-sm" data-act="import-commit" data-file="' + esc(filename) + '">确认导入</button>';
+    } else {
+      return head + '<div class="notice notice-warn">认不出这个表格，检查一下表头。</div>';
+    }
+
+    const table = '<table class="tbl" style="margin:10px 0"><tbody>' +
+      rows.map(x => '<tr><td style="width:180px;color:var(--text-2)">' + esc(x[0]) + '</td><td><b>' + esc(String(x[1])) + '</b></td></tr>').join('') +
+      '</tbody></table>';
+
+    const sample = (r.sample && r.sample.length)
+      ? '<div class="group-title">前几行预览</div><div class="table-wrap"><table class="tbl"><thead><tr>' +
+          Object.keys(r.sample[0]).map(k => '<th>' + esc(k) + '</th>').join('') + '</tr></thead><tbody>' +
+          r.sample.map(row => '<tr>' + Object.keys(r.sample[0]).map(k => '<td>' + esc(row[k] || '') + '</td>').join('') + '</tr>').join('') +
+        '</tbody></table></div>'
+      : '';
+
+    const errs = (r.errorRows && r.errorRows.length)
+      ? '<div class="notice notice-warn" style="margin-top:10px">有 ' + r.bad + ' 行没能导入：<br>' +
+        r.errorRows.map(e => '· 第 ' + e.row + ' 行：' + esc(e.why)).join('<br>') + '</div>'
+      : '';
+
+    const created = [];
+    if (r.created) {
+      if (r.created.projects && r.created.projects.length) created.push('新项目：' + r.created.projects.join('、'));
+      if (r.created.techs && r.created.techs.length) created.push('新人员：' + r.created.techs.join('、'));
+    }
+
+    return head + table + sample + errs +
+      (created.length ? '<p class="hint">' + esc(created.join('；')) + '（确认后自动建档）</p>' : '') +
+      ((r.add || r.update) ? '<button class="btn btn-primary btn-sm" data-act="import-commit" data-file="' + esc(filename) + '">确认导入</button>' : '<p class="hint">没有可导入的新内容。</p>');
+  }
+
+  async function commitImport(filename) {
+    const file = pendingImportFile;
+    const out = $('#import-result');
+    if (!file) { toast('文件已失效，请重新选择'); return; }
+    const isDb = /\.(db|sqlite|sqlite3)$/i.test(filename);
+    if (isDb) {
+      const ok = await confirmDialog('整库恢复', '这会用上传的文件覆盖服务器上的全部数据（所有团队）。\n系统会先自动备份当前库。确定继续吗？');
+      if (!ok) return;
+    }
+    if (out) out.innerHTML = '<p class="hint">正在写入…</p>';
+    try {
+      const res = await fetch('/api/backup/import?filename=' + encodeURIComponent(filename) + '&dry=0', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + window.__auth.getToken() },
+        body: file
+      });
+      const j = await res.json().catch(() => null);
+      if (!res.ok) throw new Error((j && j.error) || ('HTTP ' + res.status));
+      pendingImportFile = null;
+      const input = $('#import-file');
+      if (input) input.value = '';
+
+      if (j.kind === 'db') {
+        alert('整库恢复完成。当前登录状态可能失效，请重新登录。\n恢复前的备份：' + j.backup);
+        try { await cloud.auth.signOut(); } catch (e) { /* ignore */ }
+        location.reload();
+        return;
+      }
+      await loadAll();
+      render();
+      toast('导入完成', 3200);
+      if ($('#import-result')) {
+        $('#import-result').innerHTML = '<div class="notice">导入完成：' +
+          (j.kind === 'appointments' ? '新增 ' + j.add + ' 条预约，跳过 ' + j.skip + ' 条'
+            : j.kind === 'profiles' ? '新增 ' + j.add + ' 人，更新 ' + j.update + ' 人'
+              : '人员 +' + j.profiles.add + '，项目 +' + j.projects.add + '，预约 +' + (j.appointments ? j.appointments.add : 0)) +
+          '</div>';
+      }
+    } catch (e) {
+      if (out) out.innerHTML = '<div class="notice notice-warn">导入失败：' + esc(e.message) + '</div>';
+      else toast('导入失败：' + e.message, 4600);
+    }
+  }
+
+    async function doLogout() {
     try { await cloud.auth.signOut(); } catch (e) { /* ignore */ }
     state.session = null; state.user = null; state.uid = null; state.profile = null;
+    state.team = null; state.pending = null; state.teamRequests = []; state.wxSettings = null;
+    state.timeOff = []; state.appointments = []; state.profiles = [];
     state.notifications = []; state.lastNotifId = 0;
     if (state.pollTimer) clearInterval(state.pollTimer);
     showLogin('已退出登录', true);
@@ -1967,9 +2864,11 @@
     if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
     const pin = (f.elements.pin ? String(f.elements.pin.value || '') : '').trim();
     if (pin) { const pe = pinError(pin); if (pe) { toast(pe); return; } }
+    const phoneRaw = (f.elements.phone.value || '').trim();
+    if (phoneRaw) { const ph = phoneError(phoneRaw); if (ph) { toast(ph); return; } }
     const payload = {
       name: name,
-      phone: (f.elements.phone.value || '').trim() || null,
+      phone: phoneRaw ? normPhone(phoneRaw) : null,
       email: email || null,
       role: f.elements.role.value,
       color: f.elements.color.value,
@@ -2006,7 +2905,7 @@
       : ($('[data-act="toggle-notify"]') ? $('[data-act="toggle-notify"]').checked : true);
     const payload = { notify_enabled: enabled, updated_at: new Date().toISOString() };
     if (el) payload.pushplus_token = el.value.trim() || null;
-    const { data, error } = await db.from('settings').update(payload).eq('id', 1).select();
+    const { data, error } = await db.from('settings').update(payload).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
     if (!data || !data.length) { toast('没有权限，只有统筹管理员能改全局通知'); return; }
     state.settings = data[0];
@@ -2063,7 +2962,7 @@
       });
     }
 
-    const { data, error } = await db.from('settings').update(payload).eq('id', 1).select();
+    const { data, error } = await db.from('settings').update(payload).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
     if (!data || !data.length) { toast('没有权限，只有统筹管理员能改邮件设置'); return; }
     state.settings = data[0];
@@ -2189,6 +3088,11 @@
       color: f.elements.color.value
     };
     if (!payload.name) { toast('请填写姓名'); return; }
+    if (payload.phone) {
+      const ph = phoneError(payload.phone);
+      if (ph) { toast(ph); return; }
+      payload.phone = normPhone(payload.phone);
+    }
     const { data, error } = await db.from('profiles').update(payload).eq('id', state.profile.id).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
     if (!data || !data.length) { toast('保存失败'); return; }
@@ -2283,7 +3187,6 @@
     if (!cloud || !db) { showLogin('组件加载失败，请检查网络后刷新页面'); return; }
 
     try {
-      await handleCallback();
       await boot();
     } catch (e) {
       console.error('[速派] 启动失败', e && e.message);
