@@ -960,8 +960,8 @@
     if (isOwnerTeam()) tabs.splice(6, 0, { k: 'login', t: '登录方式' });
     return '<div class="page-head"><div><h1 class="page-title">设置</h1>' +
       '<p class="page-desc">' + esc(teamRoleLabel(state.profile.team_role)) + ' · ' +
-        (isOwnerTeam() ? '统筹管理员：管理员能做的事你都能做，另外独占发信邮箱、微信登录、导入导出'
-          : (isAdmin() ? '管理员：可管理项目、人员、排期与通知，也可任免管理员（系统级配置由统筹负责）' : '项目与人员由管理员维护')) +
+        (isOwnerTeam() ? '管理员能做的事你都能做，另外独占发信邮箱、微信登录、导入导出'
+          : (isAdmin() ? '可管理项目、人员、排期与通知，也可任免管理员（系统级配置由统筹负责）' : '项目与人员由管理员维护')) +
         (state.team ? ' · 团队「' + esc(state.team.name) + '」' : '') + '</p></div></div>' +
       '<div class="settings-grid">' +
         '<div class="settings-nav">' + tabs.map(x =>
@@ -1201,8 +1201,8 @@
         '（要输入自己的登录 PIN + 手输「确认」）。<br>' +
         '<b>管理员</b>可以有多个，' + (canEdit ? '在上面的列表里点「设为管理员」即可' : '由统筹管理员或管理员设置') +
         '；管理员之间权限相同，能管项目、人员、排期和通知，也能任免其他管理员，' +
-        '但不能取消统筹、不能碰系统级配置（发信邮箱、微信登录、导入导出）。<br>' +
-        (canEdit ? '' : '你现在的身份是「' + esc(teamRoleLabel(actor.team_role)) + '」，只能查看，不能调整。') +
+        '但不能取消统筹、不能碰系统级配置（发信邮箱、微信登录、导入导出）。' +
+        (canEdit ? '' : '<br>你现在的身份是「' + esc(teamRoleLabel(actor.team_role)) + '」，只能查看，不能调整。') +
       '</p></div></div>';
   }
 
