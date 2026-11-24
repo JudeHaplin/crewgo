@@ -137,6 +137,19 @@ CREATE TABLE IF NOT EXISTS appointments (
   updated_at TEXT
 );
 
+/* 预约附件：文件本体放 DATA_DIR/files 下，这里只记元数据 */
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
+  appointment_id INTEGER,
+  owner_id TEXT,
+  name TEXT NOT NULL,
+  mime TEXT,
+  size INTEGER NOT NULL DEFAULT 0,
+  store_name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   team_id INTEGER,
@@ -217,6 +230,8 @@ CREATE INDEX IF NOT EXISTS email_logs_team_idx ON email_logs (team_id);
 CREATE UNIQUE INDEX IF NOT EXISTS time_off_key ON time_off (team_id, profile_id, off_date);
 CREATE INDEX IF NOT EXISTS time_off_date_idx ON time_off (team_id, off_date);
 CREATE INDEX IF NOT EXISTS mail_acc_team_idx ON mail_accounts (team_id, priority);
+CREATE INDEX IF NOT EXISTS attach_appt_idx ON attachments (appointment_id);
+CREATE INDEX IF NOT EXISTS attach_team_idx ON attachments (team_id);
 `;
 
 const TABLES = {
@@ -235,9 +250,14 @@ const TABLES = {
   appointments: {
     cols: ['id', 'team_id', 'owner_id', 'creator_name', 'project_id', 'project_name', 'tech_id', 'tech_name',
       'visit_date', 'time_slot', 'address', 'content', 'contact_name', 'contact_phone', 'contact_email', 'status',
-      'priority', 'note', 'reminded_at', 'mailed_at', 'created_at', 'updated_at'],
+      'priority', 'note', 'reminded_at', 'mailed_at', 'created_at', 'updated_at', 'updater_id', 'updater_name'],
     bool: [],
     num: ['id', 'project_id', 'team_id']
+  },
+  attachments: {
+    cols: ['id', 'team_id', 'appointment_id', 'owner_id', 'name', 'mime', 'size', 'store_name', 'created_at'],
+    bool: [],
+    num: ['id', 'team_id', 'appointment_id', 'size']
   },
   notifications: {
     cols: ['id', 'team_id', 'owner_id', 'appointment_id', 'title', 'body', 'read_at', 'created_at'],
@@ -272,7 +292,7 @@ const TABLES = {
 };
 
 /** 这些表一律按团队隔离 */
-const SCOPED = ['profiles', 'projects', 'appointments', 'notifications', 'settings', 'email_logs', 'time_off', 'mail_accounts'];
+const SCOPED = ['profiles', 'projects', 'appointments', 'notifications', 'settings', 'email_logs', 'time_off', 'mail_accounts', 'attachments'];
 
 /** 只允许团队 API 改的字段：防止有人用 /api/db 给自己换团队或提权 */
 const TEAM_LOCKED_COLS = ['team_id', 'team_role'];
@@ -336,7 +356,22 @@ const PROFILE_MIGRATIONS = [
   ['email_code_sent_at', 'TEXT']
 ];
 
+/* 预约单改动记录：谁改的、什么时候改的（详情页只给管理员看） */
+const APPOINTMENT_MIGRATIONS = [
+  ['updater_id', 'TEXT'],
+  ['updater_name', 'TEXT'],
+  ['updated_at', 'TEXT']
+];
+
 const colsOf = table => db.prepare('PRAGMA table_info(' + table + ')').all().map(c => c.name);
+
+/** 本地时间戳（和 created_at 的格式一致），不用 SQL 的 localtime，避免容器时区坑 */
+function localStamp(d) {
+  const t = d || new Date();
+  const p = n => String(n).padStart(2, '0');
+  return t.getFullYear() + '-' + p(t.getMonth() + 1) + '-' + p(t.getDate()) + ' ' +
+    p(t.getHours()) + ':' + p(t.getMinutes()) + ':' + p(t.getSeconds());
+}
 
 /** 老库 settings 是 id=1 单行 + CHECK(id=1)，团队化必须重建表 */
 function rebuildSettings() {
@@ -376,6 +411,11 @@ function migrate() {
   const pcols = colsOf('profiles');
   for (const [name, type] of PROFILE_MIGRATIONS) {
     if (!pcols.includes(name)) db.exec('ALTER TABLE profiles ADD COLUMN ' + name + ' ' + type);
+  }
+  // 老预约单补改动记录列（附件表由 SETTINGS_DDL 里的 CREATE TABLE IF NOT EXISTS 负责）
+  const acols = colsOf('appointments');
+  for (const [name, type] of APPOINTMENT_MIGRATIONS) {
+    if (!acols.includes(name)) db.exec('ALTER TABLE appointments ADD COLUMN ' + name + ' ' + type);
   }
   // 同名唯一索引改成「团队内唯一」：不同团队可以有同名的人
   try { db.exec('DROP INDEX IF EXISTS profiles_name_key'); } catch (e) { /* ignore */ }
@@ -665,14 +705,36 @@ function assertCan(actor, table, action, payload, filters) {
   if (action === 'select') return;
 
   if (table === 'appointments') {
+    const idFilter = (filters || []).find(f => f && f.col === 'id');
+    const load = () => (idFilter ? handle().prepare('SELECT owner_id, tech_id, team_id FROM appointments WHERE id = ?').get(idFilter.val) : null);
     if (action === 'delete' && !admin) {
-      const row = (filters || []).find(f => f.col === 'id');
-      const target = row ? handle().prepare('SELECT owner_id, team_id FROM appointments WHERE id = ?').get(row.val) : null;
+      const target = load();
       if (!target || target.team_id !== actor.teamId || target.owner_id !== actor.id) {
         throw deny('只有创建人或团队管理员能删除这条预约');
       }
     }
+    // 不是自己预约的单：只有管理员能改内容；其他人（正是这单的维修人员）
+    // 只能改状态做标记，而且不能把状态改成「已取消」——取消是预约人自己的权利
+    if (action === 'update' && !admin) {
+      const target = load();
+      if (!target) throw deny('只能按单号修改预约');
+      if (target.team_id !== actor.teamId) throw deny();
+      if (target.owner_id !== actor.id) {
+        const list = Array.isArray(payload) ? payload : [payload || {}];
+        const allowed = ['status', 'updated_at', 'updater_id', 'updater_name', 'reminded_at', 'mailed_at'];
+        for (const v of list) {
+          const extra = Object.keys(v || {}).filter(k => !allowed.includes(k));
+          if (extra.length) throw deny('只有预约人和管理员能修改这条预约的内容');
+          if (String((v || {}).status || '') === '已取消') throw deny('只有预约人自己能取消预约，维修人员请标记状态');
+        }
+      }
+    }
     return;
+  }
+
+  if (table === 'attachments') {
+    if (action === 'select') return;
+    throw deny('附件请通过上传接口处理');
   }
 
   if (table === 'notifications') return; // 服务端按 team + owner 过滤
@@ -819,6 +881,16 @@ function runInner(actor, q) {
     // 不允许「无条件更新全表」；settings 一个团队只有一行，是唯一例外
     if (!(q.filters || []).length && table !== 'settings') throw bad('拒绝无条件更新');
     const values = pick(table, q.values || {});
+    // 谁改的、什么时候改的：由服务端盖章，前端传什么都不算数。
+    // 只是补「已发信 / 已提醒」这类系统字段时不算人工改动，不盖改动章。
+    if (table === 'appointments') {
+      const auto = Object.keys(values).every(k => k === 'mailed_at' || k === 'reminded_at');
+      if (!auto) {
+        values.updated_at = localStamp();
+        values.updater_id = actor.id;
+        values.updater_name = actor.name;
+      }
+    }
     // 授权码留空 = 保持原来的（前端拿不到旧值，清空也没意义）
     if (table === 'mail_accounts' && !values.pass) delete values.pass;
     if (!Object.keys(values).length) return { data: [] };
@@ -913,7 +985,7 @@ function raw() { return handle(); }
 
 module.exports = {
   open, run, raw, snapshot, replaceDatabase, shape, bad, deny,
-  DATA_DIR, DB_FILE, BACKUP_DIR, TABLES, SCOPED,
+  DATA_DIR, DB_FILE, BACKUP_DIR, TABLES, SCOPED, localStamp,
   genTeamCode, newTeamCode, normCode, CODE_RE, ensureTeamSettings, seedMailAccount,
   normPhone, phoneError, PHONE_RE, isTeamAdmin, isOwner, todayStr
 };

@@ -25,7 +25,8 @@
   const SLOTS = ['全天', '上午', '下午', '晚上'];
   const SLOT_ORDER = { '全天': 0, '上午': 1, '下午': 2, '晚上': 3 };
   const STATUSES = ['待确认', '已确认', '进行中', '已完成', '已取消'];
-  const STATUS_NEXT = { '待确认': ['已确认', '已取消'], '已确认': ['进行中', '已完成'], '进行中': ['已完成'] };
+  // 「取消」不走快捷标记：只有预约人自己和管理员能取消，见 openApptModal
+  const STATUS_NEXT = { '待确认': ['已确认'], '已确认': ['进行中', '已完成'], '进行中': ['已完成'] };
   const ROLE_LABEL = { admin: '管理员', tech: '维修人员', requester: '预约人' };
   const teamRoleLabel = r => ({ owner: '统筹管理员', admin: '管理员', member: '成员' }[r] || '成员');
   const PALETTE = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2', '#d94690', '#65a30d'];
@@ -123,7 +124,7 @@
   /* ---------- 状态 ---------- */
   const state = {
     session: null, user: null, uid: null, profile: null,
-    profiles: [], projects: [], appointments: [], notifications: [], timeOff: [],
+    profiles: [], projects: [], appointments: [], notifications: [], timeOff: [], attachments: [],
     settings: null,
     team: null, pending: null, wechat: { mp: false, qr: false },
     teamRequests: [], wxSettings: null, teamMode: 'join',
@@ -446,14 +447,16 @@
 
   /* ---------- 数据 ---------- */
   async function loadAll() {
-    const [pr, pf, ap, st, nf, to] = await Promise.all([
+    const [pr, pf, ap, st, nf, to, at] = await Promise.all([
       db.from('projects').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
       db.from('profiles').select('*').order('created_at', { ascending: true }),
       db.from('appointments').select('*').order('visit_date', { ascending: false }).limit(1000),
       // 服务端按团队过滤，一个团队只有一行 settings
       db.from('settings').select('*').maybeSingle(),
       db.from('notifications').select('*').order('created_at', { ascending: false }).limit(50),
-      db.from('time_off').select('*').limit(2000)
+      db.from('time_off').select('*').limit(2000),
+      // 附件元数据（文件本体走 /api/files/:id，要点开才下载）
+      db.from('attachments').select('*').order('id', { ascending: true }).limit(5000)
     ]);
     state.projects = pr.data || [];
     state.profiles = pf.data || [];
@@ -465,6 +468,7 @@
     state.settings = st.data || null;
     state.notifications = nf.data || [];
     state.timeOff = to.data || [];
+    state.attachments = at.data || [];
 
     const me = state.profiles.filter(p => p.user_id === state.uid)[0];
     if (me) {
@@ -1350,7 +1354,7 @@
 
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">表格怎么填</h3></div><div class="card-body">' +
         '<p class="hint" style="margin:0 0 8px"><b>预约单表</b>（第一行是表头，列名认这些）：<br>' +
-          '日期（必填，2026-11-24 / 2026/11/24 / 11月24日 都行）、时段（上午/下午/晚上/全天）、项目、维修人员、地址、报修内容、预约人（旧表头「联系人」也认）、预约人电话、状态、优先级、备注</p>' +
+          '日期（必填，2026-11-24 / 2026/11/24 / 11月24日 都行）、时段（上午/下午/晚上/全天）、项目、维修人员、地址、维修内容（旧表头「报修内容」也认）、预约人（旧表头「联系人」也认）、预约人电话、状态、优先级、备注</p>' +
         '<p class="hint" style="margin:0 0 8px"><b>人员表</b>：姓名（必填）、手机号（11 位）、邮箱、身份（维修人员/预约人/统筹管理员）、PIN（留空默认 1234）</p>' +
         '<p class="hint" style="margin:0">表格里出现的新项目、新维修人员会自动建档；同一个人同一天同一时段重复的行会被跳过。</p>' +
       '</div></div>' +
@@ -1579,6 +1583,110 @@
   /* ============================================================
      预约表单 / 详情
      ============================================================ */
+  /* ---------- 附件 ---------- */
+  const authToken = () => (window.__auth && window.__auth.getToken ? window.__auth.getToken() : '') || '';
+  // 图片用 <img src> 直接显示，带不了 Authorization 头，所以令牌走查询参数
+  const fileUrl = (id, dl) => '/api/files/' + id + '?t=' + encodeURIComponent(authToken()) + (dl ? '&dl=1' : '');
+  const isImgMime = m => /^image\//.test(String(m || ''));
+  const sizeLabel = n => {
+    const b = Number(n) || 0;
+    if (b >= 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + 'MB';
+    if (b >= 1024) return Math.max(1, Math.round(b / 1024)) + 'KB';
+    return b + 'B';
+  };
+  const ATT_MAX_MB = 20;
+  const attOf = apptId => state.attachments.filter(x => String(x.appointment_id) === String(apptId));
+  let attPending = [];   // 还没上传的本机文件：保存时才传，中途取消不会在服务器上留垃圾
+  let attRemoved = [];   // 编辑时标记要删掉的已上传附件
+
+  /** 表单里那一排附件小卡片（已上传的 + 待上传的） */
+  function attChipsHtml() {
+    const form = $('form[data-form="appt"]');
+    const apptId = form ? form.getAttribute('data-id') : '';
+    const saved = apptId ? attOf(apptId).filter(x => attRemoved.indexOf(Number(x.id)) < 0) : [];
+    const parts = saved.map(x =>
+      '<span class="att-chip">' +
+        (isImgMime(x.mime) ? '<img class="att-mini" src="' + fileUrl(x.id) + '" alt="">' : '<i class="att-ico">📄</i>') +
+        '<span class="att-nm">' + esc(x.name) + '</span><span class="att-sz">' + sizeLabel(x.size) + '</span>' +
+        '<button type="button" class="att-x" data-act="rm-att" data-id="' + x.id + '" aria-label="移除">×</button>' +
+      '</span>').concat(attPending.map((f, i) =>
+      '<span class="att-chip att-chip-new">' +
+        '<i class="att-ico">' + (isImgMime(f.type) ? '🖼' : '📄') + '</i>' +
+        '<span class="att-nm">' + esc(f.name || '粘贴的图片') + '</span><span class="att-sz">' + sizeLabel(f.size) + '</span>' +
+        '<button type="button" class="att-x" data-act="rm-att" data-key="' + i + '" aria-label="移除">×</button>' +
+      '</span>'));
+    return parts.length ? '<div class="att-list" style="margin-top:8px">' + parts.join('') + '</div>' : '';
+  }
+
+  function renderAtts() {
+    const host = $('#att-host');
+    if (host) host.innerHTML = attChipsHtml();
+  }
+
+  /** 选好 / 拖进来 / 粘贴进来的文件先进待传队列 */
+  function addAttFiles(list) {
+    const arr = Array.prototype.slice.call(list || []);
+    let big = 0, added = 0;
+    arr.forEach(f => {
+      if (!f || !f.size) return;
+      if (f.size > ATT_MAX_MB * 1024 * 1024) { big++; return; }
+      attPending.push(f);
+      added++;
+    });
+    if (big) toast('有 ' + big + ' 个文件超过 ' + ATT_MAX_MB + 'MB，没加上');
+    if (added) renderAtts();
+    return added;
+  }
+
+  async function uploadAttachment(file, apptId) {
+    const headers = {
+      Authorization: 'Bearer ' + authToken(),
+      'X-File-Name': encodeURIComponent(file.name || 'file'),
+      'Content-Type': file.type || 'application/octet-stream'
+    };
+    const res = await fetch('/api/files' + (apptId ? '?appointment_id=' + encodeURIComponent(apptId) : ''), {
+      method: 'POST', headers: headers, body: file
+    });
+    if (!res.ok) {
+      let msg = '上传失败（' + res.status + '）';
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* ignore */ }
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
+  async function deleteAttachment(id) {
+    const res = await fetch('/api/files/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + authToken() }
+    });
+    if (!res.ok) {
+      let msg = '删除失败（' + res.status + '）';
+      try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) { /* ignore */ }
+      throw new Error(msg);
+    }
+    return true;
+  }
+
+  /** 保存预约后把附件落盘：先删掉被移除的，再把待传的传上去；返回失败个数 */
+  async function flushAttachments(apptId) {
+    let failed = 0;
+    for (const id of attRemoved) {
+      try { await deleteAttachment(id); } catch (e) { failed++; }
+    }
+    attRemoved = [];
+    for (const f of attPending) {
+      try { await uploadAttachment(f, apptId); } catch (e) { failed++; }
+    }
+    attPending = [];
+    return failed;
+  }
+
+  function openApptForm(a) {
+    attPending = []; attRemoved = [];
+    openModal(apptFormHtml(a || null), { onMount: mountApptForm });
+  }
+
   function apptFormHtml(a) {
     a = a || {};
     const projectOpts = state.projects.filter(p => p.active !== false);
@@ -1609,13 +1717,20 @@
         '</div>' +
         '<div id="appt-check" class="notice hidden" style="margin:0 0 14px"></div>' +
         '<div class="field"><label>维修地址</label><input class="input" name="address" value="' + esc(a.address || '') + '" placeholder="小区 / 楼栋 / 门牌"></div>' +
-        '<div class="field"><label>报修内容</label><textarea class="textarea" name="content" placeholder="哪里坏了，需要带什么材料">' + esc(a.content || '') + '</textarea></div>' +
+        '<div class="field"><label>维修内容</label><textarea class="textarea" name="content" placeholder="哪里坏了，需要带什么材料">' + esc(a.content || '') + '</textarea></div>' +
         '<div class="form-row">' +
           '<div class="field"><label>预约人</label><input class="input" name="contact_name" value="' + esc(cName) + '" placeholder="谁报的修 / 谁负责对接"></div>' +
           '<div class="field"><label>预约人电话</label><input class="input" name="contact_phone" type="tel" value="' + esc(cPhone) + '" placeholder="上门前会打这个号码"></div>' +
         '</div>' +
-        (a.id ? '' : '<div class="hint" style="margin:-8px 0 12px">默认填的是你自己的姓名和电话，可以改成业主或现场联系人。</div>') +
-        '<div class="field"><label>预约人邮箱（选填，用于给预约人发预约确认）</label><input class="input" type="email" name="contact_email" value="' + esc(a.contact_email || '') + '" placeholder="填了才会发确认邮件"></div>' +
+        (a.id ? '' : '<div class="hint" style="margin:-8px 0 12px">默认填的是你自己的姓名和电话，可以改成业主或现场联系人。通知邮箱用各人在「设置」里填的那个，没填就不发邮件。</div>') +
+        '<div class="field"><label>附件</label>' +
+          '<div class="att-drop" id="att-drop" data-act="pick-att">' +
+            '<div class="att-drop-t">点击选择文件，或把图片/文件拖到这里，也可以直接 Ctrl+V 粘贴截图</div>' +
+            '<div class="att-drop-s">单个文件最大 ' + ATT_MAX_MB + 'MB，图片、PDF、Office 文档都行</div>' +
+          '</div>' +
+          '<input type="file" id="att-input" multiple style="display:none">' +
+          '<div id="att-host">' + attChipsHtml() + '</div>' +
+        '</div>' +
         '<div class="form-row">' +
           '<div class="field"><label>优先级</label><select class="select" name="priority">' +
             ['普通', '加急'].map(s => '<option' + ((a.priority || '普通') === s ? ' selected' : '') + '>' + s + '</option>').join('') +
@@ -1631,13 +1746,56 @@
     );
   }
 
+  /* 当前这个人对这条预约能做什么：
+     管理员不受约束；预约人（创建人）能改能取消；被指派的维修人员只能标记状态 */
+  function apptCaps(a) {
+    const admin = isAdmin();
+    const mine = String(a.owner_id || '') === String(state.uid || '');
+    const myTech = String(a.tech_id || '') === String((state.profile && state.profile.id) || '');
+    return {
+      admin: admin,
+      mine: mine,
+      myTech: myTech,
+      canEdit: admin || mine,
+      canCancel: admin || mine,
+      canMark: admin || mine || myTech
+    };
+  }
+
+  /** 给预约人发消息用的邮箱：优先取他本人在「设置」里填的那个 */
+  function apptContactEmail(a) {
+    const p = a.owner_id ? profileById(a.owner_id) : null;
+    return String((p && p.email) || a.contact_email || '').trim();
+  }
+
+  function apptAttsHtml(a) {
+    const list = attOf(a.id);
+    if (!list.length) return '';
+    const imgs = list.filter(x => isImgMime(x.mime));
+    const files = list.filter(x => !isImgMime(x.mime));
+    return '<div class="att-view">' +
+      (imgs.length ? '<div class="att-thumbs">' + imgs.map(x =>
+        '<a class="att-thumb" href="' + fileUrl(x.id) + '" target="_blank" rel="noopener" title="' + esc(x.name) + '">' +
+          '<img src="' + fileUrl(x.id) + '" alt="' + esc(x.name) + '" loading="lazy">' +
+        '</a>').join('') + '</div>' : '') +
+      (files.length ? '<div class="att-files">' + files.map(x =>
+        '<a class="att-file" href="' + fileUrl(x.id, true) + '">' +
+          '<span class="att-nm">' + esc(x.name) + '</span><span class="att-sz">' + sizeLabel(x.size) + '</span>' +
+        '</a>').join('') + '</div>' : '') +
+      '<div class="hint" style="margin:6px 0 0">共 ' + list.length + ' 个附件</div>' +
+    '</div>';
+  }
+
   function openApptModal(a) {
     if (!a) {
-      openModal(apptFormHtml(null), { onMount: mountApptForm });
+      openApptForm(null);
       return;
     }
-    const canDel = isAdmin() || a.owner_id === state.uid;
-    const next = STATUS_NEXT[a.status] || [];
+    const caps = apptCaps(a);
+    const canDel = caps.admin || caps.mine;
+    const next = caps.canMark ? (STATUS_NEXT[a.status] || []) : [];
+    const attHtml = apptAttsHtml(a);
+    const stamp = v => String(v || '').slice(0, 16).replace('T', ' ');
     const body =
       '<div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap">' +
         '<span class="tag tag-' + esc(a.status) + '">' + esc(a.status) + '</span>' +
@@ -1648,22 +1806,26 @@
       line('项目', a.project_name || '—') +
       line('维修人员', a.tech_name || '待分配') +
       line('上门时间', a.visit_date + ' ' + a.time_slot) +
-      line('报修内容', a.content || '—') +
+      line('维修内容', a.content || '—') +
       line('预约人', [a.contact_name, a.contact_phone].filter(Boolean).join('　') || '—') +
-      (a.contact_email ? line('预约人邮箱', a.contact_email) : '') +
       (a.note ? line('备注', a.note) : '') +
-      line('创建人', (a.creator_name || '—') + ' · ' + String(a.created_at || '').slice(0, 16).replace('T', ' ')) +
+      (attHtml ? lineRaw('附件', attHtml) : '') +
+      // 创建人 / 改动记录只给管理员看
+      (caps.admin
+        ? line('创建人', (a.creator_name || '—') + ' · ' + stamp(a.created_at)) +
+          (a.updated_at ? line('最后改动', (a.updater_name || '—') + ' · ' + stamp(a.updated_at)) : '')
+        : '') +
       (next.length ? '<div class="status-quick">' + next.map(s =>
         '<button class="btn btn-sm" data-act="set-status" data-id="' + a.id + '" data-status="' + s + '">标记为' + s + '</button>').join('') + '</div>' : '') +
-      (a.status !== '已取消' && a.status !== '已完成'
-        ? '<div class="status-quick"><button class="btn btn-sm" data-act="set-status" data-id="' + a.id + '" data-status="已取消">取消这条预约</button></div>'
+      (caps.canCancel && a.status !== '已取消' && a.status !== '已完成'
+        ? '<div class="status-quick"><button class="btn btn-sm btn-danger" data-act="set-status" data-id="' + a.id + '" data-status="已取消">取消这条预约</button></div>'
         : '');
 
     openModal(modalShell('预约详情', body,
       '<button class="btn" data-act="copy-appt" data-id="' + a.id + '">复制通知文案</button>' +
       (mailReady() ? '<button class="btn btn-sm" data-act="mail-appt" data-id="' + a.id + '" data-kind="assign">发派单邮件</button>' : '') +
-      (mailReady() && a.contact_email ? '<button class="btn btn-sm" data-act="mail-appt" data-id="' + a.id + '" data-kind="confirm">发预约确认</button>' : '') +
-      '<button class="btn" data-act="edit-appt" data-id="' + a.id + '">编辑</button>' +
+      (mailReady() && isEmail(apptContactEmail(a)) ? '<button class="btn btn-sm" data-act="mail-appt" data-id="' + a.id + '" data-kind="confirm">发预约确认</button>' : '') +
+      (caps.canEdit ? '<button class="btn" data-act="edit-appt" data-id="' + a.id + '">编辑</button>' : '') +
       (canDel ? '<button class="btn btn-danger" data-act="del-appt" data-id="' + a.id + '">删除</button>' : '')
     ));
   }
@@ -1693,7 +1855,6 @@
       content: g('content'),
       contact_name: g('contact_name'),
       contact_phone: g('contact_phone'),
-      contact_email: g('contact_email') || null,
       priority: g('priority') || '普通',
       status: g('status') || '待确认',
       note: g('note')
@@ -1742,6 +1903,26 @@
       r.conflicts.map(c => '· ' + esc(c.time_slot) + ' ' + esc(c.project_name || '') + ' ' + esc(c.address || c.content || '')).join('<br>');
   }
 
+  let pasteBound = false;
+  /** 复制粘贴截图：表单开着的时候，Ctrl+V 直接把剪贴板里的图片/文件加进附件 */
+  function bindPasteOnce() {
+    if (pasteBound) return;
+    pasteBound = true;
+    document.addEventListener('paste', e => {
+      if (!$('form[data-form="appt"]')) return;
+      const items = (e.clipboardData && e.clipboardData.items) || [];
+      const files = [];
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].kind !== 'file') continue;
+        const f = items[i].getAsFile();
+        if (f) files.push(f);
+      }
+      if (!files.length) return;
+      e.preventDefault();
+      if (addAttFiles(files)) toast('已粘贴 ' + files.length + ' 个附件');
+    });
+  }
+
   function mountApptForm() {
     const f = $('form[data-form="appt"]');
     if (!f) return;
@@ -1752,6 +1933,32 @@
       el.addEventListener('input', refreshApptCheck);
     });
     refreshApptCheck();
+
+    // 附件：点击选择 / 拖进虚线框 / 拖到表单任意位置都算
+    const drop = $('#att-drop');
+    const input = $('#att-input');
+    if (input) {
+      input.addEventListener('change', () => { addAttFiles(input.files); input.value = ''; });
+    }
+    const over = on => {
+      if (!drop) return;
+      drop.classList[on ? 'add' : 'remove']('over');
+    };
+    ['dragenter', 'dragover'].forEach(t => {
+      f.addEventListener(t, e => { e.preventDefault(); over(true); });
+      if (drop) drop.addEventListener(t, e => { e.preventDefault(); over(true); });
+    });
+    ['dragleave', 'dragend'].forEach(t => {
+      f.addEventListener(t, e => { if (e.target === f) over(false); });
+      if (drop) drop.addEventListener(t, () => over(false));
+    });
+    f.addEventListener('drop', e => {
+      e.preventDefault();
+      over(false);
+      const files = e.dataTransfer && e.dataTransfer.files;
+      if (files && files.length) addAttFiles(files);
+    });
+    bindPasteOnce();
   }
 
   /** 校验没通过时把光标送到出问题的那个下拉，省得自己找 */
@@ -1778,7 +1985,7 @@
     if (!payload.project_id) { toast('请选择项目（必选）'); focusField('project_id'); return; }
     if (!payload.tech_id) { toast('请选择维修人员（必选）'); focusField('tech_id'); return; }
     if (!payload.visit_date) { toast('请选择上门日期'); return; }
-    if (!payload.address && !payload.content) { toast('请填写地址或报修内容'); return; }
+    if (!payload.address && !payload.content) { toast('请填写地址或维修内容'); return; }
     // 预约人留空时兜底用当前登录的人，保证详情和通知里一定有联系人
     if (!id) {
       if (!payload.contact_name) payload.contact_name = state.profile.name || null;
@@ -1837,6 +2044,13 @@
       const rows = (out && out.data) || [];
       if (!rows.length) throw new Error('没有权限修改这条预约');
       const created = id ? null : rows[0];
+      const savedId = Number(id || (created && created.id) || 0);
+      // 附件最后落盘：预约单存下来了才有 id 可以挂
+      let attFailed = 0;
+      if (savedId && (attPending.length || attRemoved.length)) {
+        if (btn) btn.textContent = '上传附件…';
+        attFailed = await flushAttachments(savedId);
+      }
       closeModal();
       await loadAll();
       render();
@@ -1846,6 +2060,7 @@
       } else {
         toast('已保存');
       }
+      if (attFailed) toast('有 ' + attFailed + ' 个附件没传上去，可以进「编辑」重试', 4600);
     } catch (e) {
       toast('保存失败：' + (e.message || '请重试'));
       if (btn) { btn.disabled = false; btn.textContent = '保存'; }
@@ -2033,7 +2248,7 @@
           { k: '项目', v: a.project_name || '未指定' },
           { k: '上门时间', v: when },
           { k: '地址', v: a.address || '待填' },
-          { k: '报修内容', v: a.content || '待填' },
+          { k: '维修内容', v: a.content || '待填' },
           { k: '预约人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() },
           { k: '备注', v: a.note || '' },
           { k: '单号', v: '#' + a.id }
@@ -2046,10 +2261,10 @@
     return r.ok;
   }
 
-  /* 预约确认：发给业主/报修人，比微信消息正式，可留档可转发 */
+  /* 预约确认：发给预约人本人，邮箱取他在「设置」里填的那个，没填就不发 */
   async function mailConfirm(a) {
     if (!mailOn()) return false;
-    const to = String(a.contact_email || '').trim();
+    const to = apptContactEmail(a);
     if (!isEmail(to)) return false;
     const when = dayLabel(a.visit_date) + ' ' + (a.time_slot || '');
     const r = await sendMail({
@@ -2217,8 +2432,8 @@
 
     switch (act) {
       case 'close-modal': closeModal(); break;
-      case 'new-appt': openModal(apptFormHtml(null), { onMount: mountApptForm }); break;
-      case 'new-appt-day': state.board.day = el.getAttribute('data-date'); openModal(apptFormHtml(null), { onMount: mountApptForm }); break;
+      case 'new-appt': openApptForm(null); break;
+      case 'new-appt-day': state.board.day = el.getAttribute('data-date'); openApptForm(null); break;
       case 'open-appt': {
         const a = state.appointments.filter(x => String(x.id) === String(id))[0];
         if (a) openApptModal(a);
@@ -2226,10 +2441,26 @@
       }
       case 'edit-appt': {
         const a = state.appointments.filter(x => String(x.id) === String(id))[0];
-        if (a) openModal(apptFormHtml(a), { onMount: mountApptForm });
+        if (a) openApptForm(a);
         break;
       }
       case 'submit-appt': saveAppt(el.getAttribute('data-id')); break;
+      case 'pick-att': {
+        const input = $('#att-input');
+        if (input) input.click();
+        break;
+      }
+      case 'rm-att': {
+        const savedId = el.getAttribute('data-id');
+        const key = el.getAttribute('data-key');
+        if (savedId) {
+          if (attRemoved.indexOf(Number(savedId)) < 0) attRemoved.push(Number(savedId));
+        } else if (key !== null) {
+          attPending.splice(Number(key), 1);
+        }
+        renderAtts();
+        break;
+      }
       case 'set-status': setStatus(Number(id), el.getAttribute('data-status')); break;
       case 'del-appt': delAppt(Number(id)); break;
       case 'copy-appt': copyAppt(Number(id)); break;
@@ -2929,12 +3160,66 @@
 
   /* ---------- 预约动作 ---------- */
   async function setStatus(id, status) {
-    const { data, error } = await db.from('appointments').update({ status: status, updated_at: new Date().toISOString() }).eq('id', id).select();
+    const a = state.appointments.filter(x => Number(x.id) === Number(id))[0];
+    if (!a) return;
+    if (status === '已取消') {
+      const ok = await confirmDialog('取消这条预约', '取消后维修人员会收到通知，这条单也不再出现在排期里。确定取消吗？');
+      if (!ok) return;
+    }
+    // updated_at / 改动人由服务端盖章，前端不用传
+    const { data, error } = await db.from('appointments').update({ status: status }).eq('id', id).select();
     if (error) { toast('操作失败：' + (error.message || '')); return; }
     if (!data || !data.length) { toast('没有权限修改这条预约'); return; }
     closeModal();
+    const updated = Object.assign({}, a, data[0]);
     await loadAll(); render();
     toast('已标记为' + status);
+    // 维修人员（或管理员）替别人改状态时，主动告诉预约人一声
+    notifyStatusChange(updated, status).catch(() => false);
+  }
+
+  /** 状态改动通知预约人：站内通知 + 微信（有 token）+ 邮件（设置里填了邮箱才发） */
+  async function notifyStatusChange(a, status) {
+    if (!a || String(a.owner_id || '') === String(state.uid || '')) return false;
+    const p = a.owner_id ? profileById(a.owner_id) : null;
+    const when = dayLabel(a.visit_date) + ' ' + (a.time_slot || '');
+    const title = '预约「' + (a.address || '#' + a.id) + '」已' + status;
+    const text = apptText(Object.assign({}, a, { status: status }));
+    if (p && p.user_id) {
+      try {
+        await db.from('notifications').insert({
+          owner_id: p.user_id,
+          appointment_id: Number(a.id),
+          title: title,
+          body: text
+        });
+      } catch (e) { /* 通知失败不阻断 */ }
+    }
+    if (p && p.push_token) pushWeChat(p.push_token, title, when, appLink());
+    const to = p && isEmail(p.email) ? String(p.email).trim() : '';
+    if (to && mailOn()) {
+      await sendMail({
+        to: to,
+        toName: p.name || '',
+        subject: '【预约' + status + '】' + when,
+        kind: 'status',
+        html: mailHtml({
+          title: '预约状态：' + status,
+          badge: when,
+          intro: (p.name ? p.name + '，' : '') + '你预约的这条维修单状态更新为「' + status + '」。',
+          rows: [
+            { k: '项目', v: a.project_name || '' },
+            { k: '维修人员', v: a.tech_name || '' },
+            { k: '上门时间', v: when },
+            { k: '地址', v: a.address || '' },
+            { k: '维修内容', v: a.content || '' },
+            { k: '单号', v: '#' + a.id }
+          ],
+          action: { text: '打开速派看详情', url: appLink() }
+        })
+      }).catch(() => false);
+    }
+    return true;
   }
 
   async function delAppt(id) {
@@ -2963,7 +3248,7 @@
     toast('正在发送…');
     const ok = kind === 'confirm' ? await mailConfirm(a).catch(() => false) : await mailAssignment(a).catch(() => false);
     if (ok) { toast('已发出'); return; }
-    const who = kind === 'confirm' ? '这条单没填联系邮箱' : '被指派的维修工没填邮箱';
+    const who = kind === 'confirm' ? '预约人还没在「设置 → 个人资料」里填邮箱' : '被指派的维修工没填邮箱';
     toast('没发出去：' + who + '，或邮件配置有误。可在「发送记录」里看具体原因', 5000);
   }
 
@@ -2986,8 +3271,10 @@
 
   function exportCsv() {
     const list = sortAppts(state.appointments.filter(apptMatchesFilter));
-    const head = ['日期', '时段', '项目', '维修人员', '地址', '报修内容', '预约人', '预约人电话', '状态', '优先级', '备注', '创建人'];
-    const rows = list.map(a => [a.visit_date, a.time_slot, a.project_name, a.tech_name, a.address, a.content, a.contact_name, a.contact_phone, a.status, a.priority, a.note, a.creator_name]);
+    // 创建人只给管理员导出（其他人看不到这一列）
+    const withCreator = isAdmin();
+    const head = ['日期', '时段', '项目', '维修人员', '地址', '维修内容', '预约人', '预约人电话', '状态', '优先级', '备注'].concat(withCreator ? ['创建人'] : []);
+    const rows = list.map(a => [a.visit_date, a.time_slot, a.project_name, a.tech_name, a.address, a.content, a.contact_name, a.contact_phone, a.status, a.priority, a.note].concat(withCreator ? [a.creator_name] : []));
     const csv = [head].concat(rows).map(r => r.map(v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);

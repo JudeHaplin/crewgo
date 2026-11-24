@@ -155,7 +155,7 @@ async function runReminders(teamId) {
           rows: [
             { k: '上门时间', v: when + ' ' + a.time_slot },
             { k: '地址', v: a.address || '待填' },
-            { k: '报修内容', v: a.content || '待填' },
+            { k: '维修内容', v: a.content || '待填' },
             { k: '预约人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() }
           ]
         })

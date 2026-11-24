@@ -43,6 +43,26 @@ const MIME = {
 const log = msg => console.log(new Date().toLocaleString('zh-CN', { hour12: false }) + '  ' + msg);
 const fail = (res, code, msg) => send(res, code, { error: msg });
 
+/* ---------- 预约附件 ---------- */
+// 文件本体落在 DATA_DIR/files/<team_id>/ 下，库里只存元数据；不进静态目录，必须带令牌才给下载
+const FILES_DIR = path.join(store.DATA_DIR, 'files');
+const ATTACH_MAX = 20 * 1024 * 1024;
+const INLINE_MIME = /^(image\/|application\/pdf$|text\/plain$)/;
+
+/** 预约单被删掉时，把它的附件行和磁盘文件一起清掉，别留垃圾 */
+function dropAttachmentsOf(ids, teamId) {
+  if (!ids || !ids.length || !teamId) return 0;
+  const marks = ids.map(() => '?').join(',');
+  const rows = store.raw().prepare(
+    'SELECT * FROM attachments WHERE team_id = ? AND appointment_id IN (' + marks + ')'
+  ).all(teamId, ...ids);
+  for (const r of rows) {
+    try { fs.unlinkSync(path.join(FILES_DIR, String(r.team_id), path.basename(r.store_name))); } catch (e) { /* ignore */ }
+  }
+  store.raw().prepare('DELETE FROM attachments WHERE team_id = ? AND appointment_id IN (' + marks + ')').run(teamId, ...ids);
+  return rows.length;
+}
+
 /**
  * 把库里存的时间读成毫秒时间戳。
  * 新数据存的是 JS 算出来的毫秒数（不受时区影响）；老数据是
@@ -115,7 +135,11 @@ function readRaw(req, limit) {
     const chunks = [];
     req.on('data', c => {
       size += c.length;
-      if (size > max) { reject(new Error('文件太大，单次最多 64MB')); req.destroy(); return; }
+      if (size > max) {
+        reject(new Error('文件太大，单个最多 ' + Math.round(max / 1024 / 1024) + 'MB'));
+        req.destroy();
+        return;
+      }
       chunks.push(c);
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
@@ -141,7 +165,13 @@ function markFail(ip) {
 function actorFrom(req) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : '';
-  const payload = auth.verify(token);
+  return actorFromToken(token);
+}
+
+/** 附件要能被 <img src> / 下载链接直接打开，那种请求带不了 Authorization 头，
+ *  所以允许用 ?t=<token> 传令牌（登录令牌本来就存在前端 localStorage 里） */
+function actorFromToken(token) {
+  const payload = auth.verify(String(token || ''));
   if (!payload) return null;
   const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(payload.pid);
   if (!row || row.active === 0) return null;
@@ -704,6 +734,91 @@ async function handleApi(req, res, pathname, url) {
     return send(res, 200, { ok: true });
   }
 
+  /* ---------------- 预约附件：上传 / 下载 / 删除 / 绑定 ---------------- */
+  if (pathname === '/api/files' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
+    let name = '';
+    try { name = decodeURIComponent(req.headers['x-file-name'] || ''); } catch (e) { name = ''; }
+    name = path.basename(String(name || 'file')).slice(0, 120) || 'file';
+    const apptQ = Number(url.searchParams.get('appointment_id') || 0);
+    let apptId = null;
+    if (apptQ) {
+      const own = store.raw().prepare('SELECT team_id FROM appointments WHERE id = ?').get(apptQ);
+      if (!own || Number(own.team_id) !== Number(actor.teamId)) return fail(res, 404, '预约单不存在');
+      apptId = apptQ;
+    }
+    let buf;
+    try { buf = await readRaw(req, ATTACH_MAX); }
+    catch (e) { return fail(res, 413, e.message); }
+    if (!buf.length) return fail(res, 400, '这个文件是空的');
+
+    const teamDir = path.join(FILES_DIR, String(actor.teamId));
+    fs.mkdirSync(teamDir, { recursive: true });
+    const ext = (path.extname(name) || '').toLowerCase().replace(/[^.a-z0-9]/g, '').slice(0, 10);
+    const storeName = crypto.randomBytes(12).toString('hex') + ext;
+    fs.writeFileSync(path.join(teamDir, storeName), buf);
+    const mime = String(req.headers['content-type'] || 'application/octet-stream').split(';')[0].slice(0, 100);
+    const info = store.raw().prepare(
+      'INSERT INTO attachments (team_id, appointment_id, owner_id, name, mime, size, store_name) VALUES (?,?,?,?,?,?,?)'
+    ).run(actor.teamId, apptId, actor.id, name, mime, buf.length, storeName);
+    return send(res, 200, { ok: true, id: Number(info.lastInsertRowid), name: name, mime: mime, size: buf.length });
+  }
+
+  if (pathname === '/api/files/link' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    const body = await readBody(req);
+    const apptId = Number(body.appointment_id || 0);
+    const ids = (Array.isArray(body.ids) ? body.ids : []).map(Number).filter(n => n > 0);
+    if (!apptId || !ids.length) return fail(res, 400, '缺少预约单或附件');
+    const appt = store.raw().prepare('SELECT team_id FROM appointments WHERE id = ?').get(apptId);
+    if (!appt || Number(appt.team_id) !== Number(actor.teamId)) return fail(res, 404, '预约单不存在');
+    const marks = ids.map(() => '?').join(',');
+    const admin = store.isTeamAdmin(actor);
+    const sql = 'UPDATE attachments SET appointment_id = ? WHERE id IN (' + marks + ') AND team_id = ?' +
+      (admin ? '' : ' AND owner_id = ?');
+    const args = [apptId, ...ids, actor.teamId].concat(admin ? [] : [actor.id]);
+    const info = store.raw().prepare(sql).run(...args);
+    return send(res, 200, { ok: true, linked: Number(info.changes || 0) });
+  }
+
+  const fileMatch = pathname.match(/^\/api\/files\/(\d+)$/);
+  if (fileMatch && (req.method === 'GET' || req.method === 'DELETE')) {
+    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '') || url.searchParams.get('t') || '';
+    const actor = actorFromToken(token);
+    if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    const id = Number(fileMatch[1]);
+    const row = store.raw().prepare('SELECT * FROM attachments WHERE id = ?').get(id);
+    if (!row || Number(row.team_id) !== Number(actor.teamId)) return fail(res, 404, '附件不存在');
+    const file = path.join(FILES_DIR, String(row.team_id), path.basename(row.store_name));
+
+    if (req.method === 'DELETE') {
+      const appt = row.appointment_id
+        ? store.raw().prepare('SELECT owner_id FROM appointments WHERE id = ?').get(row.appointment_id)
+        : null;
+      const allowed = store.isTeamAdmin(actor) || row.owner_id === actor.id || (appt && appt.owner_id === actor.id);
+      if (!allowed) return fail(res, 403, '只有上传人和管理员能删除附件');
+      try { fs.unlinkSync(file); } catch (e) { /* 磁盘上已经没了也无所谓 */ }
+      store.raw().prepare('DELETE FROM attachments WHERE id = ?').run(id);
+      return send(res, 200, { ok: true });
+    }
+
+    if (!fs.existsSync(file)) return fail(res, 404, '附件文件已丢失（可能在备份恢复时被清掉了）');
+    const buf = fs.readFileSync(file);
+    const inline = INLINE_MIME.test(String(row.mime || '')) && url.searchParams.get('dl') !== '1';
+    const head = {
+      'Content-Type': row.mime || 'application/octet-stream',
+      'Content-Length': buf.length,
+      'Cache-Control': 'private, max-age=600',
+      'X-Content-Type-Options': 'nosniff'
+    };
+    head['Content-Disposition'] = (inline ? 'inline' : 'attachment') + "; filename*=UTF-8''" + encodeURIComponent(row.name || 'file');
+    res.writeHead(200, head);
+    return res.end(buf);
+  }
+
   /* ---------------- 数据接口 ---------------- */
   if (pathname === '/api/db' && req.method === 'POST') {
     const actor = actorFrom(req);
@@ -761,6 +876,12 @@ async function handleApi(req, res, pathname, url) {
       }
     }
     const result = store.run(actor, body);
+    // 删预约单时连带清掉附件（文件 + 元数据），避免占着磁盘又查不到
+    if (body && body.table === 'appointments' && body.action === 'delete') {
+      const ids = (body.filters || []).filter(f => f && f.col === 'id' && f.op === 'eq')
+        .map(f => Number(f.val)).filter(Boolean);
+      if (ids.length) dropAttachmentsOf(ids, actor.teamId);
+    }
     return send(res, 200, result);
   }
 
