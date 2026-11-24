@@ -141,18 +141,22 @@ function importTeamJson(actor, payload, dry) {
 
 /* ============================ 表格导入 ============================ */
 const ALIASES = {
-  visit_date: ['日期', '上门日期', '预约日期', '服务日期', 'date', 'visit_date'],
+  // 具体写法放前面：匹配是先「完全相同」再「包含」，否则「预定维修日期」会被泛化的「日期」抢走，
+  // 一列之差就落到「报修日期」上去（真实台账里这两列挨着，很容易踩）
+  visit_date: ['预定维修日期', '计划维修日期', '预计维修日期', '上门维修日期', '预约维修日期',
+    '日期', '上门日期', '预约日期', '服务日期', 'date', 'visit_date'],
   time_slot: ['时段', '时间段', '时间', 'time', 'time_slot'],
-  project_name: ['项目', '项目名称', '小区', '楼盘', 'project'],
+  finish_date: ['实际维修日期', '实际完成日期', '完工日期', '完成日期', 'finish_date'],
+  project_name: ['项目名称', '项目', '小区', '楼盘', 'project'],
   tech_name: ['维修人员', '人员', '维修工', '师傅', '工程师', '负责人', 'tech'],
   address: ['地址', '上门地址', '详细地址', 'address'],
-  content: ['报修内容', '内容', '事项', '问题', '问题描述', '故障', 'content'],
+  content: ['维修项目', '报修项目', '维修内容', '报修内容', '内容', '事项', '问题', '问题描述', '故障', 'content'],
   contact_name: ['联系人', '业主', '客户', '报修人', 'contact'],
   contact_phone: ['联系电话', '电话', '手机号', '手机', '联系方式', 'phone'],
   status: ['状态', '进度', 'status'],
   priority: ['优先级', '紧急程度', 'priority'],
   note: ['备注', '说明', 'note'],
-  creator_name: ['创建人', '录入人', '派单人', 'creator'],
+  creator_name: ['创建人', '录入人', '派单人', '项目经理', 'creator'],
   // 人员表
   name: ['姓名', '名字', '人员姓名', 'name'],
   phone: ['手机号', '电话', '手机', '联系电话', 'phone'],
@@ -163,8 +167,17 @@ const ALIASES = {
 
 function normKey(s) { return String(s || '').toLowerCase().replace(/[\s\-_()（）]/g, ''); }
 
+/* 宽松匹配（包含关系）时容易误伤：台账里的「创建时间」「最后修改时间」含「时间」，
+   一不留神就被当成「时段」。这类系统列一律排除。 */
+const LOOSE_SKIP = {
+  time_slot: /创建|修改|更新|录入|日期|date/i,
+  visit_date: /创建|修改|更新|录入/i,
+  content: /创建|修改/
+};
+
 function pickCol(header, field) {
   const alias = ALIASES[field] || [];
+  const skip = LOOSE_SKIP[field];
   const norm = header.map(h => ({ raw: h, k: normKey(h) }));
   for (const a of alias) {
     const key = normKey(a);
@@ -175,7 +188,7 @@ function pickCol(header, field) {
   for (const a of alias) {
     const key = normKey(a);
     if (key.length < 2) continue;
-    const hit = norm.find(x => x.k.indexOf(key) >= 0);
+    const hit = norm.find(x => x.k.indexOf(key) >= 0 && !(skip && skip.test(x.k)));
     if (hit) return hit.raw;
   }
   return null;
@@ -257,8 +270,8 @@ function importTable(actor, buf, filename, dry) {
   if (kind === 'profiles') return importProfiles(actor, list, header, dry);
 
   const c = {};
-  for (const f of ['visit_date', 'time_slot', 'project_name', 'tech_name', 'address', 'content', 'contact_name',
-    'contact_phone', 'status', 'priority', 'note', 'creator_name']) {
+  for (const f of ['visit_date', 'time_slot', 'finish_date', 'project_name', 'tech_name', 'address', 'content',
+    'contact_name', 'contact_phone', 'status', 'priority', 'note', 'creator_name']) {
     c[f] = pickCol(header, f);
   }
 
@@ -269,16 +282,21 @@ function importTable(actor, buf, filename, dry) {
   };
   const projCache = {};
   const techCache = {};
+  // 预览时库里还没有新行，靠这个集合模拟「同一份表里的重复」，让预览数字和真跑一致
+  const drySeen = new Set();
 
   const findProject = name => {
     if (!name) return null;
     if (projCache[name] !== undefined) return projCache[name];
     let row = raw().prepare('SELECT * FROM projects WHERE team_id = ? AND lower(name) = lower(?)').get(teamId, name);
-    if (!row && !dry) {
-      const info = raw().prepare('INSERT INTO projects (team_id, name, color, active) VALUES (?,?,?,1)')
-        .run(teamId, attr(name), COLORS[Object.keys(projCache).length % COLORS.length]);
-      row = raw().prepare('SELECT * FROM projects WHERE id = ?').get(info.lastInsertRowid);
+    if (!row) {
+      // 预览（dry）也要如实报告「将会新建哪些」，否则用户以为不用建项目
       report.created.projects.push(name);
+      if (!dry) {
+        const info = raw().prepare('INSERT INTO projects (team_id, name, color, active) VALUES (?,?,?,1)')
+          .run(teamId, attr(name), COLORS[Object.keys(projCache).length % COLORS.length]);
+        row = raw().prepare('SELECT * FROM projects WHERE id = ?').get(info.lastInsertRowid);
+      }
     }
     projCache[name] = row || null;
     return projCache[name];
@@ -288,12 +306,14 @@ function importTable(actor, buf, filename, dry) {
     if (!name) return null;
     if (techCache[name] !== undefined) return techCache[name];
     let row = raw().prepare('SELECT * FROM profiles WHERE team_id = ? AND lower(name) = lower(?)').get(teamId, name);
-    if (!row && !dry) {
-      const id = team.newProfileId();
-      raw().prepare("INSERT INTO profiles (id, team_id, name, role, color, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,1,?,'member',0)")
-        .run(id, teamId, attr(name), 'tech', COLORS[Object.keys(techCache).length % COLORS.length], id);
-      row = raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
+    if (!row) {
       report.created.techs.push(name);
+      if (!dry) {
+        const id = team.newProfileId();
+        raw().prepare("INSERT INTO profiles (id, team_id, name, role, color, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,1,?,'member',0)")
+          .run(id, teamId, attr(name), 'tech', COLORS[Object.keys(techCache).length % COLORS.length], id);
+        row = raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
+      }
     }
     techCache[name] = row || null;
     return techCache[name];
@@ -309,16 +329,26 @@ function importTable(actor, buf, filename, dry) {
         if (report.errorRows.length < 8) report.errorRows.push({ row: i + 2, why: '日期认不出：' + String(r[c.visit_date] || '(空)') });
         continue;
       }
-      const slot = normSlot(r[c.time_slot]);
+      const slot = c.time_slot ? normSlot(r[c.time_slot]) : '全天'; // 台账常常只有日期、没有时段
       const address = attr(r[c.address]);
       const content = attr(r[c.content]);
       const projName = attr(r[c.project_name]);
       const techName = attr(r[c.tech_name]);
 
+      // 「实际维修日期」有值就当已完成，否则待确认；表里明确写了状态则以表为准
+      const statusRaw = c.status ? attr(r[c.status]) : '';
+      let status = normStatus(statusRaw);
+      if (!statusRaw || statusRaw === '待确认') {
+        const fin = c.finish_date ? normDate(r[c.finish_date]) : '';
+        if (fin) status = '已完成';
+      }
+
+      const dupKey = date + '|' + slot + '|' + (address || '') + '|' + (content || '');
       const dup = raw().prepare(
         "SELECT id FROM appointments WHERE team_id = ? AND visit_date = ? AND time_slot = ? AND IFNULL(address,'') = ? AND IFNULL(content,'') = ?"
       ).get(teamId, date, slot, address || '', content || '');
-      if (dup) { report.skip++; continue; }
+      if (dup || drySeen.has(dupKey)) { report.skip++; continue; }
+      drySeen.add(dupKey);
 
       const proj = findProject(projName);
       const tech = findTech(techName);
@@ -333,7 +363,7 @@ function importTable(actor, buf, filename, dry) {
         ).run(teamId, actor.id, attr(r[c.creator_name]) || actor.name, proj ? proj.id : null, projName || null,
           tech ? tech.id : null, techName || null, date, slot, address, content,
           attr(r[c.contact_name]), attr(r[c.contact_phone]),
-          normStatus(r[c.status]), /加急|urgent|急/i.test(String(r[c.priority] || '')) ? '加急' : '普通',
+          status, /加急|urgent|急/i.test(String(r[c.priority] || '')) ? '加急' : '普通',
           attr(r[c.note]));
       }
     }

@@ -255,6 +255,32 @@ function zip(files) {
   const d21 = afterXlsx.json.data.find(a => a.visit_date === '2026-12-21');
   ok(d21 && d21.time_slot === '全天', 'Excel 日期写法与全天时段都认', d21 && d21.time_slot);
 
+  // 真实台账的列形：预定维修日期 / 维修项目 / 项目经理 / 创建时间——容易互相误认
+  const ledger = makeXlsx([
+    ['项目名称', '报修日期', '项目经理', '人员', '维修项目', '预定维修日期', '实际维修日期', '备注', '创建时间', '最后修改时间'],
+    ['皇都花园', '2026-12-01', '乔通', '梅庭付', '换水表', '2026-12-15', '2026-12-15', '三号楼', '46217.62', '46217.71'],
+    ['皇都花园', '2026-12-01', '乔通', '梅庭付', '修门锁', '46217', '', '', '46217.63', '46218.11']
+  ]);
+  const lr = await fetch(BASE + '/api/backup/import?filename=台账.xlsx&dry=1', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + admin, 'Content-Type': 'application/octet-stream' }, body: ledger
+  });
+  const lj = await lr.json();
+  ok(lr.status === 200 && lj.kind === 'appointments' && lj.add === 2, '台账列形能识别', lj);
+  ok(lj.sample[0].日期 === '2026-12-15' && lj.sample[0].项目 === '皇都花园' && lj.sample[0].内容 === '换水表',
+    '取「预定维修日期」而不是「报修日期」，内容取「维修项目」', lj.sample[0]);
+  ok(lj.sample[0].时段 === '全天', '台账没有时段列时按全天，不被「创建时间」带偏', lj.sample[0].时段);
+  ok(lj.sample[1].日期.length === 10 && lj.sample[1].日期.slice(0, 4) === '2026', 'Excel 序列号当日期用', lj.sample[1].日期);
+  ok(lj.created.techs.indexOf('梅庭付') >= 0 && lj.created.projects.indexOf('皇都花园') >= 0, '预览就告诉会新建哪些项目/人员', lj.created);
+
+  const lw = await fetch(BASE + '/api/backup/import?filename=台账.xlsx&dry=0', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + admin, 'Content-Type': 'application/octet-stream' }, body: ledger
+  });
+  ok((await lw.json()).add === 2, '台账落库');
+  const afterLedger = await db(admin, { table: 'appointments', action: 'select' });
+  const done = afterLedger.json.data.filter(a => a.visit_date === '2026-12-15' && a.content === '换水表')[0];
+  ok(done && done.status === '已完成', '填了「实际维修日期」的按已完成落库', done && done.status);
+  ok(done && done.creator_name === '乔通', '「项目经理」落到创建人', done && done.creator_name);
+
   const jsonImport = await fetch(BASE + '/api/backup/import?filename=backup.json&dry=0', {
     method: 'POST', headers: { Authorization: 'Bearer ' + other },
     body: JSON.stringify(payload)
