@@ -807,7 +807,9 @@ async function handleApi(req, res, pathname, url) {
 
     if (!fs.existsSync(file)) return fail(res, 404, '附件文件已丢失（可能在备份恢复时被清掉了）');
     const buf = fs.readFileSync(file);
-    const inline = INLINE_MIME.test(String(row.mime || '')) && url.searchParams.get('dl') !== '1';
+    const mime = String(row.mime || '');
+    // SVG 里能带脚本，一律当附件下载，不在同源里直接渲染
+    const inline = INLINE_MIME.test(mime) && !/svg/i.test(mime) && url.searchParams.get('dl') !== '1';
     const head = {
       'Content-Type': row.mime || 'application/octet-stream',
       'Content-Length': buf.length,
