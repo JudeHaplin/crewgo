@@ -130,6 +130,8 @@ async function run(routes, token) {
 function click(listeners, act, attrs) {
   const a = Object.assign({}, attrs || {});
   const fake = {
+    checked: !!a.checked,
+    value: a.value === undefined ? '' : String(a.value),
     getAttribute: k => (k === 'data-act' ? act : (a[k.replace('data-', '')] === undefined ? null : String(a[k.replace('data-', '')])))
   };
   const target = {
@@ -287,6 +289,11 @@ function click(listeners, act, attrs) {
       ok(html.indexOf('ABC123456') >= 0, '团队页显示团队码');
       ok(html.indexOf('新同事') >= 0, '团队页显示待审申请');
     }
+    if (tab === 'notify') {
+      ok(html.indexOf('我的通知邮箱') >= 0, '通知页有「我的通知邮箱」（人人可自设）');
+      ok(html.indexOf('发送验证码') >= 0, '邮箱要用验证码验证');
+      ok(html.indexOf('邮箱服务') >= 0, '统筹能看到「邮箱服务」配置入口');
+    }
     if (tab === 'data') {
       ok(html.indexOf('导出 JSON') >= 0 && html.indexOf('导入') >= 0, '数据页有导出/导入入口');
     }
@@ -295,6 +302,26 @@ function click(listeners, act, attrs) {
       ok(html.indexOf('微信') >= 0, '我的资料里有微信绑定');
     }
   }
+
+  console.log('\n[7] 预约单列表的批量选择');
+  click(full.listeners, 'nav', { nav: 'list' });
+  let lh = full.nodes['#page'].innerHTML;
+  ok(lh.indexOf('全选') >= 0, '列表上方有批量操作条');
+  ok(lh.indexOf('data-act="sel-row"') >= 0, '每行都有勾选框');
+  ok(lh.indexOf('按时间选') >= 0 && lh.indexOf('选中这段时间') >= 0, '支持按时间范围整段选中');
+  ok(lh.indexOf('批量改状态') >= 0 && lh.indexOf('删除选中') >= 0, '有批量改状态 / 批量删除');
+  ok(lh.indexOf('<b>0</b>') >= 0, '默认一条都没选');
+  click(full.listeners, 'sel-all', { checked: true });
+  lh = full.nodes['#page'].innerHTML;
+  ok(lh.indexOf('<b>1</b>') >= 0, '全选后已选 1 条');
+  ok(lh.indexOf('row-sel') >= 0, '选中的行会高亮');
+  click(full.listeners, 'sel-invert', { checked: true });
+  lh = full.nodes['#page'].innerHTML;
+  ok(lh.indexOf('<b>0</b>') >= 0, '反选后回到 0 条');
+  click(full.listeners, 'sel-all', { checked: true });
+  click(full.listeners, 'sel-clear', { checked: true });
+  lh = full.nodes['#page'].innerHTML;
+  ok(lh.indexOf('<b>0</b>') >= 0, '清空后回到 0 条');
 
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);

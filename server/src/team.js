@@ -223,11 +223,12 @@ function members(actor) {
 }
 
 function setRole(actor, profileId, role) {
-  if (!store.isOwner(actor)) throw deny('只有团队统筹能任免管理员');
+  // 管理员之间权限相同：谁都能任命/降级其他人，唯独动不了统筹
+  requireAdmin(actor);
   if (TEAM_ROLES.indexOf(role) < 0 || role === 'owner') throw bad('只能设为管理员或成员');
   const p = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(profileId), actor.teamId);
   if (!p) throw bad('成员不存在');
-  if (p.team_role === 'owner') throw bad('队长不能被降级，需要先转让队长');
+  if (p.team_role === 'owner') throw deny('不能改动团队统筹的身份，需要先转让队长');
   raw().prepare('UPDATE profiles SET team_role = ? WHERE id = ?').run(role, p.id);
   return { ok: true };
 }
@@ -236,8 +237,8 @@ function removeMember(actor, profileId) {
   requireAdmin(actor);
   const p = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(profileId), actor.teamId);
   if (!p) throw bad('成员不存在');
+  // 只有统筹不能被动：其他管理员之间权限相同，互相也能移出
   if (p.team_role === 'owner') throw deny('不能移除团队统筹');
-  if (p.team_role === 'admin' && !store.isOwner(actor)) throw deny('只有团队统筹能移除管理员');
   raw().prepare('UPDATE profiles SET team_id = NULL, team_role = ?, role = ? WHERE id = ?').run('member', 'tech', p.id);
   return { ok: true };
 }
@@ -297,7 +298,7 @@ function dissolve(actor, confirmName) {
   if (String(confirmName || '').trim() !== team.name) throw bad('团队名称输入不对，已取消');
   raw().exec('BEGIN');
   try {
-    for (const t of ['appointments', 'notifications', 'projects', 'email_logs', 'settings', 'team_requests']) {
+    for (const t of ['appointments', 'notifications', 'projects', 'email_logs', 'settings', 'team_requests', 'mail_accounts', 'time_off']) {
       raw().prepare('DELETE FROM ' + t + ' WHERE team_id = ?').run(team.id);
     }
     raw().prepare('UPDATE profiles SET team_id = NULL, team_role = ?, role = ? WHERE team_id = ?').run('member', 'tech', team.id);

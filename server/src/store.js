@@ -92,7 +92,12 @@ CREATE TABLE IF NOT EXISTS profiles (
   team_role TEXT NOT NULL DEFAULT 'member',
   need_profile INTEGER NOT NULL DEFAULT 0,
   avatar TEXT,
-  last_login_at TEXT
+  last_login_at TEXT,
+  email_verified_at TEXT,
+  email_code TEXT,
+  email_code_exp TEXT,
+  email_code_tries INTEGER NOT NULL DEFAULT 0,
+  email_code_sent_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -162,6 +167,32 @@ CREATE TABLE IF NOT EXISTS time_off (
   reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+/* 发信账号：一个团队可以配多个，前一个发不出或被限额就自动换下一个 */
+CREATE TABLE IF NOT EXISTS mail_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER,
+  label TEXT,
+  kind TEXT NOT NULL DEFAULT 'smtp',
+  host TEXT,
+  port INTEGER DEFAULT 465,
+  user TEXT,
+  pass TEXT,
+  from_addr TEXT,
+  from_name TEXT,
+  service_id TEXT,
+  template_id TEXT,
+  public_key TEXT,
+  daily_limit INTEGER NOT NULL DEFAULT 0,
+  sent_today INTEGER NOT NULL DEFAULT 0,
+  sent_date TEXT,
+  exhausted_date TEXT,
+  priority INTEGER NOT NULL DEFAULT 100,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_error TEXT,
+  last_used_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 `;
 
 
@@ -184,14 +215,16 @@ CREATE INDEX IF NOT EXISTS notif_team_idx ON notifications (team_id);
 CREATE INDEX IF NOT EXISTS email_logs_team_idx ON email_logs (team_id);
 CREATE UNIQUE INDEX IF NOT EXISTS time_off_key ON time_off (team_id, profile_id, off_date);
 CREATE INDEX IF NOT EXISTS time_off_date_idx ON time_off (team_id, off_date);
+CREATE INDEX IF NOT EXISTS mail_acc_team_idx ON mail_accounts (team_id, priority);
 `;
 
 const TABLES = {
   profiles: {
     cols: ['id', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id',
-      'created_at', 'team_id', 'team_role', 'need_profile', 'avatar', 'last_login_at'],
+      'created_at', 'team_id', 'team_role', 'need_profile', 'avatar', 'last_login_at',
+      'email_verified_at', 'email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at'],
     bool: ['active', 'need_profile'],
-    num: ['team_id']
+    num: ['team_id', 'email_code_tries']
   },
   projects: {
     cols: ['id', 'team_id', 'name', 'address', 'color', 'active', 'sort_order', 'created_at'],
@@ -227,11 +260,18 @@ const TABLES = {
     cols: ['id', 'team_id', 'profile_id', 'off_date', 'reason', 'created_at'],
     bool: [],
     num: ['id', 'team_id']
+  },
+  mail_accounts: {
+    cols: ['id', 'team_id', 'label', 'kind', 'host', 'port', 'user', 'pass', 'from_addr', 'from_name',
+      'service_id', 'template_id', 'public_key', 'daily_limit', 'sent_today', 'sent_date', 'exhausted_date',
+      'priority', 'enabled', 'last_error', 'last_used_at', 'created_at'],
+    bool: ['enabled'],
+    num: ['id', 'team_id', 'port', 'daily_limit', 'sent_today', 'priority']
   }
 };
 
 /** 这些表一律按团队隔离 */
-const SCOPED = ['profiles', 'projects', 'appointments', 'notifications', 'settings', 'email_logs', 'time_off'];
+const SCOPED = ['profiles', 'projects', 'appointments', 'notifications', 'settings', 'email_logs', 'time_off', 'mail_accounts'];
 
 /** 只允许团队 API 改的字段：防止有人用 /api/db 给自己换团队或提权 */
 const TEAM_LOCKED_COLS = ['team_id', 'team_role'];
@@ -284,7 +324,13 @@ const PROFILE_MIGRATIONS = [
   ['team_role', "TEXT NOT NULL DEFAULT 'member'"],
   ['need_profile', 'INTEGER NOT NULL DEFAULT 0'],
   ['avatar', 'TEXT'],
-  ['last_login_at', 'TEXT']
+  ['last_login_at', 'TEXT'],
+  // 邮箱验证：验证码只存 10 分钟，验证过的邮箱记 email_verified_at
+  ['email_verified_at', 'TEXT'],
+  ['email_code', 'TEXT'],
+  ['email_code_exp', 'TEXT'],
+  ['email_code_tries', 'INTEGER NOT NULL DEFAULT 0'],
+  ['email_code_sent_at', 'TEXT']
 ];
 
 const colsOf = table => db.prepare('PRAGMA table_info(' + table + ')').all().map(c => c.name);
@@ -383,9 +429,61 @@ function newTeamCode() {
 function ensureTeamSettings(teamId) {
   if (!teamId) return null;
   const row = db.prepare('SELECT * FROM settings WHERE team_id = ?').get(teamId);
-  if (row) return row;
+  if (row) {
+    seedMailAccount(teamId);
+    return row;
+  }
   db.prepare('INSERT INTO settings (team_id) VALUES (?)').run(teamId);
   return db.prepare('SELECT * FROM settings WHERE team_id = ?').get(teamId);
+}
+
+const seededTeams = new Set();
+
+/**
+ * 老版本只有一套 SMTP 配置存在 settings 里。
+ * 升级后搬成一条「邮箱服务」，这样界面上能继续编辑、也能再加第二个。
+ * 只在团队还没有任何发信账号时搬一次，之后完全以 mail_accounts 为准。
+ */
+function seedMailAccount(teamId) {
+  if (!teamId || seededTeams.has(teamId)) return null;
+  seededTeams.add(teamId);
+  try {
+    const n = db.prepare('SELECT COUNT(*) AS n FROM mail_accounts WHERE team_id = ?').get(teamId);
+    if (Number(n.n) > 0) return null;
+    const s = db.prepare('SELECT * FROM settings WHERE team_id = ?').get(teamId) || {};
+    const mode = String(s.mail_mode || (s.smtp_host ? 'smtp' : 'emailjs')).toLowerCase();
+    const t = String;
+    let row = null;
+    if (mode !== 'emailjs' && s.smtp_host && s.smtp_user && s.smtp_pass) {
+      row = {
+        label: t(s.smtp_name || '').trim() || t(s.smtp_user),
+        kind: 'smtp',
+        host: t(s.smtp_host).trim(),
+        port: Number(s.smtp_port || 465) || 465,
+        user: t(s.smtp_user).trim(),
+        pass: t(s.smtp_pass),
+        from_addr: t(s.smtp_from || s.smtp_user).trim(),
+        from_name: t(s.smtp_name || '速派').trim() || '速派'
+      };
+    } else if (mode === 'emailjs' && s.emailjs_service_id && s.emailjs_template_id && s.emailjs_public_key) {
+      row = {
+        label: 'EmailJS',
+        kind: 'emailjs',
+        service_id: t(s.emailjs_service_id).trim(),
+        template_id: t(s.emailjs_template_id).trim(),
+        public_key: t(s.emailjs_public_key).trim()
+      };
+    }
+    if (!row) return null;
+    db.prepare(
+      'INSERT INTO mail_accounts (team_id, label, kind, host, port, user, pass, from_addr, from_name, service_id, template_id, public_key, priority) ' +
+      'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,10)'
+    ).run(teamId, row.label || null, row.kind, row.host || null, row.port || 465, row.user || null, row.pass || null,
+      row.from_addr || null, row.from_name || null, row.service_id || null, row.template_id || null, row.public_key || null);
+    return row;
+  } catch (e) {
+    return null;
+  }
 }
 
 /**
@@ -423,6 +521,10 @@ function open() {
   migrate();
   db.exec(INDEXES);
   ensureDefaultTeam();
+  // 老版本的单一 SMTP 配置搬成「邮箱服务」，多个团队都要搬（每个团队只搬一次）
+  try {
+    for (const t of db.prepare('SELECT id FROM teams').all()) seedMailAccount(t.id);
+  } catch (e) { /* 迁移失败不影响启动，发信时才报错 */ }
   backfillTeamNotices();
   return db;
 }
@@ -430,7 +532,12 @@ function open() {
 const handle = () => (db || open());
 
 /* ---------- 结果规范化：把 0/1 变成布尔，把 id 变成数字 ---------- */
-const SECRET_COLS = { settings: ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret'] };
+const SECRET_COLS = {
+  settings: ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret'],
+  mail_accounts: ['pass'],
+  // 邮箱验证码只给本人用，谁查询都不能回传（否则同队的人能替别人验证）
+  profiles: ['email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at']
+};
 
 function shape(table, row) {
   if (!row) return row;
@@ -452,7 +559,19 @@ function shape(table, row) {
     out.wx_mp_secret_set = !!row.wx_mp_secret;
     out.wx_qr_secret_set = !!row.wx_qr_secret;
   }
+  if (table === 'mail_accounts') {
+    out.pass_set = !!row.pass;
+    out.has_quota = Number(row.daily_limit || 0) > 0;
+    out.used_today = row.sent_date === todayStr() ? Number(row.sent_today || 0) : 0;
+    out.exhausted_today = row.exhausted_date === todayStr();
+  }
   return out;
+}
+
+function todayStr() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
 }
 
 function bad(msg) {
@@ -523,7 +642,13 @@ function buildOrder(orders) {
 }
 
 /* ---------- 权限：这里取代了云端的 RLS ---------- */
+// 业务表：管理员就能改
 const ADMIN_ONLY_WRITE = ['projects', 'settings'];
+const ADMIN_LABEL = { projects: '项目', settings: '通知设置' };
+// 涉及「系统稳定 / 数据安全」的东西：只有统筹管理员（队长，全团队唯一）能改。
+// 发信账号在里面 —— 用错账号会把整个团队的通知发不出去，属于系统级配置。
+const OWNER_ONLY_WRITE = ['mail_accounts'];
+const OWNER_LABEL = { mail_accounts: '邮箱服务' };
 
 function isTeamAdmin(actor) {
   return !!actor && (actor.teamRole === 'owner' || actor.teamRole === 'admin');
@@ -569,8 +694,8 @@ function assertCan(actor, table, action, payload, filters) {
       if (action === 'delete') {
         const row = (filters || []).find(f => f.col === 'id');
         const target = row ? handle().prepare('SELECT id, team_role FROM profiles WHERE id = ?').get(row.val) : null;
+        // 统筹（全团队唯一）不能被删/降级；管理员之间权限相同，可以互相移出
         if (target && target.team_role === 'owner') throw deny('不能删除团队统筹（队长）');
-        if (target && target.team_role === 'admin' && !isOwner(actor)) throw deny('只有队长能移除其他管理员');
       }
       return;
     }
@@ -578,7 +703,7 @@ function assertCan(actor, table, action, payload, filters) {
       const idFilter = (filters || []).find(f => f.col === 'id' || f.col === 'user_id');
       const targetId = idFilter ? String(idFilter.val) : null;
       if (targetId && targetId !== actor.id) throw deny('只能修改自己的资料');
-      const allowed = ['name', 'phone', 'email', 'color', 'pin', 'avatar'];
+      const allowed = ['name', 'phone', 'email', 'color', 'pin', 'avatar', 'push_token'];
       for (const k of Object.keys(payload || {})) {
         if (!allowed.includes(k)) throw deny('这项资料只能由团队管理员修改');
       }
@@ -587,8 +712,13 @@ function assertCan(actor, table, action, payload, filters) {
     throw deny('只有团队管理员能维护人员名单');
   }
 
+  if (OWNER_ONLY_WRITE.includes(table)) {
+    if (!isOwner(actor)) throw deny('「' + (OWNER_LABEL[table] || table) + '」涉及系统稳定，只有团队统筹能改');
+    return;
+  }
+
   if (ADMIN_ONLY_WRITE.includes(table)) {
-    if (!admin) throw deny('只有团队管理员能改' + (table === 'projects' ? '项目' : '通知设置'));
+    if (!admin) throw deny('只有团队管理员能改' + (ADMIN_LABEL[table] || '这些设置'));
     return;
   }
 
@@ -686,8 +816,22 @@ function runInner(actor, q) {
     // 不允许「无条件更新全表」；settings 一个团队只有一行，是唯一例外
     if (!(q.filters || []).length && table !== 'settings') throw bad('拒绝无条件更新');
     const values = pick(table, q.values || {});
+    // 授权码留空 = 保持原来的（前端拿不到旧值，清空也没意义）
+    if (table === 'mail_accounts' && !values.pass) delete values.pass;
     if (!Object.keys(values).length) return { data: [] };
     const where = buildWhere(filters);
+    // 邮箱真的变了才要求重新验证：没变就保留已验证状态（否则每次保存资料都得重验一次）
+    if (table === 'profiles' && Object.prototype.hasOwnProperty.call(values, 'email')) {
+      const before = h.prepare(`SELECT email FROM profiles${where.sql}`).all(...where.params);
+      const changed = before.some(r => String(r.email || '').trim().toLowerCase() !== String(values.email || '').trim().toLowerCase());
+      if (changed) {
+        values.email_verified_at = null;
+        values.email_code = null;
+        values.email_code_exp = null;
+        values.email_code_tries = 0;
+        values.email_code_sent_at = null;
+      }
+    }
     const sets = Object.keys(values).map(c => `${c} = ?`).join(',');
     h.prepare(`UPDATE ${table} SET ${sets}${where.sql}`).run(...Object.keys(values).map(c => values[c]), ...where.params);
     const rows = h.prepare(`SELECT * FROM ${table}${where.sql}`).all(...where.params).map(r => shape(table, r));
@@ -767,6 +911,6 @@ function raw() { return handle(); }
 module.exports = {
   open, run, raw, snapshot, replaceDatabase, shape, bad, deny,
   DATA_DIR, DB_FILE, BACKUP_DIR, TABLES, SCOPED,
-  genTeamCode, newTeamCode, normCode, CODE_RE, ensureTeamSettings,
-  normPhone, phoneError, PHONE_RE, isTeamAdmin, isOwner
+  genTeamCode, newTeamCode, normCode, CODE_RE, ensureTeamSettings, seedMailAccount,
+  normPhone, phoneError, PHONE_RE, isTeamAdmin, isOwner, todayStr
 };

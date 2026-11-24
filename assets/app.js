@@ -126,6 +126,7 @@
     settings: null,
     team: null, pending: null, wechat: { mp: false, qr: false },
     teamRequests: [], wxSettings: null, teamMode: 'join',
+    mailAccounts: [], mail: { ready: false },
     view: 'board',
     board: { year: new Date().getFullYear(), month: new Date().getMonth(), day: todayStr() },
     filters: { tech: '', project: '', status: '', q: '' },
@@ -134,7 +135,8 @@
     authView: 'login',
     wxBannerHidden: false,
     lastNotifId: 0,
-    pollTimer: null
+    pollTimer: null,
+    sel: {} // 预约单列表里勾选的 id（批量删除/改状态用）
   };
 
   /* ============================================================
@@ -402,6 +404,7 @@
     state.team = session.team || null;
     state.pending = session.pending || null;
     state.wechat = session.wechat || state.wechat;
+    state.mail = session.mail || { ready: false };
     if (!state.uid) { showLogin('无法获取账号信息，请重新登录。'); return; }
 
     if (state.user.need_profile) { showAuth('profile'); return; }
@@ -453,6 +456,10 @@
     state.projects = pr.data || [];
     state.profiles = pf.data || [];
     state.appointments = ap.data || [];
+    // 列表变了（删了/导入了）就把已不存在的勾选清掉
+    const alive = {};
+    state.appointments.forEach(a => { alive[String(a.id)] = 1; });
+    Object.keys(state.sel || {}).forEach(k => { if (!alive[k]) delete state.sel[k]; });
     state.settings = st.data || null;
     state.notifications = nf.data || [];
     state.timeOff = to.data || [];
@@ -473,6 +480,10 @@
       try {
         state.wxSettings = await window.__api('/api/settings/wechat');
       } catch (e) { state.wxSettings = null; }
+      try {
+        const ma = await db.from('mail_accounts').select('*').order('priority', { ascending: true }).order('id', { ascending: true });
+        state.mailAccounts = ma.data || [];
+      } catch (e) { state.mailAccounts = []; }
     }
 
     const newest = state.notifications[0];
@@ -525,6 +536,9 @@
     });
   }
   const isAdmin = () => !!state.profile && (state.profile.team_role === 'owner' || state.profile.team_role === 'admin' || state.profile.role === 'admin');
+  // 团队统筹全团队只有一个：任命管理员、发信邮箱、数据导入导出、微信登录这些
+  // 涉及「系统稳定 / 数据安全」的事只有他能做
+  const isOwnerTeam = () => !!state.profile && state.profile.team_role === 'owner';
 
   /* ============================================================
      导航 / 外壳
@@ -796,10 +810,24 @@
     copyText(text);
   }
 
+  /* 预约单列表的批量选择：勾选后可以一次删掉 / 一次改状态，也能按时间范围整段选 */
+  const selectedApptIds = () => Object.keys(state.sel || {}).filter(k => state.sel[k]).map(Number);
+  // 只对「当前列表里看得见」的单子动手，避免筛选后误删被藏起来的
+  const selectedVisibleIds = () => {
+    const vis = new Set(sortAppts(state.appointments.filter(apptMatchesFilter)).map(a => String(a.id)));
+    return selectedApptIds().filter(id => vis.has(String(id)));
+  };
+
   function listHtml() {
     const list = sortAppts(state.appointments.filter(apptMatchesFilter)).reverse();
+    const sel = state.sel || {};
+    const ids = list.map(a => String(a.id));
+    const selCount = ids.filter(id => sel[id]).length;
+    const allSel = !!ids.length && selCount === ids.length;
+
     const rows = list.map(a =>
-      '<tr data-act="open-appt" data-id="' + a.id + '">' +
+      '<tr data-act="open-appt" data-id="' + a.id + '"' + (sel[a.id] ? ' class="row-sel"' : '') + '>' +
+        '<td class="sel-cell"><input type="checkbox" data-act="sel-row" data-id="' + a.id + '"' + (sel[a.id] ? ' checked' : '') + ' aria-label="选择这条"></td>' +
         '<td class="nowrap"><b>' + esc(a.visit_date.slice(5)) + '</b><div class="cell-sub">' + esc(a.time_slot) + '</div></td>' +
         '<td class="nowrap">' + esc(a.project_name || '—') + '</td>' +
         '<td class="nowrap"><span class="person"><span class="dot" style="background:' + esc(techColor(a.tech_id || a.tech_name)) + '"></span>' + esc(a.tech_name || '待分配') + '</span></td>' +
@@ -809,9 +837,30 @@
         '<td class="nowrap"><span class="tag tag-' + esc(a.status) + '">' + esc(a.status) + '</span></td>' +
       '</tr>').join('');
 
+    const selBar = '<div class="selbar">' +
+        '<label class="sel-check"><input type="checkbox" data-act="sel-all"' + (allSel ? ' checked' : '') + '>' +
+          '<span>全选（当前 ' + ids.length + ' 条）</span></label>' +
+        '<span class="sel-count">已选 <b>' + selCount + '</b> 条</span>' +
+        '<button class="btn btn-sm" data-act="sel-clear"' + (selCount ? '' : ' disabled') + '>清空</button>' +
+        '<button class="btn btn-sm" data-act="sel-invert"' + (ids.length ? '' : ' disabled') + '>反选</button>' +
+        '<span class="sel-sep"></span>' +
+        '<select class="select" data-field="sel-status">' +
+          STATUSES.map(s => '<option value="' + s + '">改为「' + s + '」</option>').join('') +
+        '</select>' +
+        '<button class="btn btn-sm" data-act="sel-status"' + (selCount ? '' : ' disabled') + '>批量改状态</button>' +
+        '<button class="btn btn-sm btn-danger" data-act="sel-delete"' + (selCount ? '' : ' disabled') + '>删除选中</button>' +
+        '<span class="sel-sep"></span>' +
+        '<span class="hint" style="margin:0">按时间选</span>' +
+        '<input class="input input-date" type="date" data-field="sel-from">' +
+        '<span class="hint" style="margin:0">至</span>' +
+        '<input class="input input-date" type="date" data-field="sel-to">' +
+        '<button class="btn btn-sm" data-act="sel-range">选中这段时间</button>' +
+      '</div>';
+
     return '' +
       '<div class="page-head">' +
-        '<div><h1 class="page-title">预约单</h1><p class="page-desc">共 ' + list.length + ' 条，按日期倒序</p></div>' +
+        '<div><h1 class="page-title">预约单</h1><p class="page-desc">共 ' + list.length + ' 条，按日期倒序' +
+          (selCount ? ' · 已选 ' + selCount + ' 条' : '') + '</p></div>' +
         '<div class="page-actions">' +
           '<button class="btn" data-act="copy-today">今日派单</button>' +
           '<button class="btn" data-act="copy-tomorrow">明日派单</button>' +
@@ -833,9 +882,9 @@
           STATUSES.map(s => '<option value="' + s + '"' + (state.filters.status === s ? ' selected' : '') + '>' + s + '</option>').join('') +
         '</select>' +
       '</div>' +
-      '<div class="card"><div class="table-wrap">' +
+      '<div class="card">' + selBar + '<div class="table-wrap">' +
         (list.length
-          ? '<table class="tbl"><thead><tr><th>日期</th><th>项目</th><th>人员</th><th>地址</th><th>事项</th><th>联系人</th><th>状态</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          ? '<table class="tbl"><thead><tr><th class="sel-cell"></th><th>日期</th><th>项目</th><th>人员</th><th>地址</th><th>事项</th><th>联系人</th><th>状态</th></tr></thead><tbody>' + rows + '</tbody></table>'
           : emptyHtml('没有符合条件的预约', '调整筛选条件，或新建一条预约')) +
       '</div></div>';
   }
@@ -906,10 +955,11 @@
       { k: 'data', t: '数据备份' },
       { k: 'me', t: '我的资料' }
     ];
-    if (isAdmin()) tabs.splice(5, 0, { k: 'login', t: '登录方式' });
+    if (isOwnerTeam()) tabs.splice(5, 0, { k: 'login', t: '登录方式' });
     return '<div class="page-head"><div><h1 class="page-title">设置</h1>' +
       '<p class="page-desc">' + esc(ROLE_LABEL[state.profile.role] || '') + ' · ' +
-        (isAdmin() ? '可管理项目、人员与团队' : '项目与人员由团队管理员维护') +
+        (isOwnerTeam() ? '团队统筹：管理员能做的事你都能做，另外独占发信邮箱、微信登录、导入导出'
+          : (isAdmin() ? '团队管理员：可管理项目、人员、排期与通知，也可任免管理员（系统级配置由统筹负责）' : '项目与人员由团队管理员维护')) +
         (state.team ? ' · 团队「' + esc(state.team.name) + '」' : '') + '</p></div></div>' +
       '<div class="settings-grid">' +
         '<div class="settings-nav">' + tabs.map(x =>
@@ -1008,86 +1058,91 @@
       '</p></div></div>';
   }
 
-  // 只是界面上的草稿：切换发送方式后立刻重绘，保存时才落库
-  let mailModeDraft = null;
+  /* 发信账号：一个团队可以配多个，前一个额度用完自动换下一个 */
+  const accountTag = a => {
+    if (!a.enabled) return ['已停用', 'tag-已取消'];
+    if (a.exhausted_today) return ['今天额度用完', 'tag-已取消'];
+    if (a.daily_limit > 0 && a.used_today >= a.daily_limit) return ['今天额度用完', 'tag-已取消'];
+    if (a.last_error) return ['上次失败', 'tag-加急'];
+    return ['正常', 'tag-已完成'];
+  };
+
+  const accountLine = (a, canEdit) => {
+    const t = accountTag(a);
+    const ready = a.kind === 'emailjs'
+      ? !!(a.service_id && a.template_id && a.public_key)
+      : !!(a.host && a.user && a.pass_set);
+    const quota = a.daily_limit > 0
+      ? '今日 ' + a.used_today + '/' + a.daily_limit
+      : '今日 ' + a.used_today + ' 封（不限量）';
+    return '<div class="list-row">' +
+      '<div class="grow"><div class="nm">' + esc(a.label || a.user || a.host || '邮箱服务') +
+        ' <span class="tag ' + t[1] + '">' + t[0] + '</span>' +
+        (ready ? '' : ' <span class="tag tag-待确认">没填全</span>') + '</div>' +
+        '<div class="sub">' + (a.kind === 'emailjs'
+          ? 'EmailJS 中转 · ' + esc(a.service_id || '') + ' · ' + quota
+          : esc((a.user || '') + ' @ ' + (a.host || '') + ':' + (a.port || 465)) + ' · ' + quota) +
+          (a.last_error ? '<br>上次错误：' + esc(String(a.last_error).slice(0, 80)) : '') +
+        '</div></div>' +
+      (canEdit
+        ? '<label class="switch" title="启用 / 停用"><input type="checkbox" data-act="mail-acc-toggle" data-id="' + a.id + '"' + (a.enabled ? ' checked' : '') + '><i></i></label>' +
+          '<button class="btn btn-sm" data-act="mail-acc-test" data-id="' + a.id + '" data-label="' + esc(a.label || '') + '">测试</button>' +
+          '<button class="btn btn-sm" data-act="mail-acc-edit" data-id="' + a.id + '">编辑</button>' +
+          '<button class="btn btn-sm btn-danger" data-act="mail-acc-del" data-id="' + a.id + '">删除</button>'
+        : '') +
+      '</div>';
+  };
 
   function emailCard(s) {
     s = s || {};
     const v = k => String(s[k] || '').trim();
-    const saved = String(s.mail_mode || (s.smtp_host ? 'smtp' : 'emailjs')).toLowerCase() === 'emailjs' ? 'emailjs' : 'smtp';
-    const mode = mailModeDraft || saved;
-    const ready = mode === 'smtp'
-      ? !!(v('smtp_host') && v('smtp_user') && s.smtp_pass_set === true)
-      : !!(v('emailjs_service_id') && v('emailjs_template_id') && v('emailjs_public_key'));
     const on = s.email_enabled === true;
-
-    const modeBtn = (k, label) =>
-      '<button class="btn btn-sm' + (mode === k ? ' btn-primary' : '') + '" data-act="mail-mode" data-mode="' + k + '">' + label + '</button>';
-
-    const smtpFields =
-      '<div class="field"><label>邮箱服务商（点一下自动填）</label>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
-          '<button class="btn btn-sm" data-act="mail-preset" data-host="smtp.qq.com" data-port="465">QQ 邮箱</button>' +
-          '<button class="btn btn-sm" data-act="mail-preset" data-host="smtp.163.com" data-port="465">163 邮箱</button>' +
-          '<button class="btn btn-sm" data-act="mail-preset" data-host="smtp.exmail.qq.com" data-port="465">腾讯企业邮</button>' +
-        '</div></div>' +
-      '<div class="field"><label>SMTP 服务器</label>' +
-        '<input class="input" data-field="smtp_host" value="' + esc(v('smtp_host') || 'smtp.qq.com') + '" placeholder="smtp.qq.com"></div>' +
-      '<div class="field"><label>端口（465 走 SSL，587 走 STARTTLS）</label>' +
-        '<input class="input" data-field="smtp_port" value="' + esc(v('smtp_port') || '465') + '" inputmode="numeric" placeholder="465"></div>' +
-      '<div class="field"><label>邮箱账号（完整地址）</label>' +
-        '<input class="input" type="email" data-field="smtp_user" value="' + esc(v('smtp_user')) + '" placeholder="你的QQ号@qq.com"></div>' +
-      '<div class="field"><label>授权码' + (s.smtp_pass_set === true ? '（已保存，留空则不修改）' : '') + '</label>' +
-        '<input class="input" type="password" data-field="smtp_pass" value="" autocomplete="new-password" placeholder="' +
-          (s.smtp_pass_set === true ? '••••••••  留空保持原来的' : '16 位授权码，不是登录密码') + '"></div>' +
-      '<div class="field"><label>发件人显示名</label>' +
-        '<input class="input" data-field="smtp_name" value="' + esc(v('smtp_name') || '速派') + '" placeholder="速派"></div>';
-
-    const emailjsFields =
-      '<div class="field"><label>Service ID</label><input class="input" data-field="emailjs_service_id" value="' + esc(v('emailjs_service_id')) + '" placeholder="service_xxxxxxx"></div>' +
-      '<div class="field"><label>Template ID</label><input class="input" data-field="emailjs_template_id" value="' + esc(v('emailjs_template_id')) + '" placeholder="template_xxxxxxx"></div>' +
-      '<div class="field"><label>Public Key</label><input class="input" data-field="emailjs_public_key" value="' + esc(v('emailjs_public_key')) + '" placeholder="公钥，可公开"></div>';
-
-    const help = mode === 'smtp'
-      ? '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">QQ 邮箱怎么填（约 3 分钟）</h3></div><div class="card-body">' +
-          '<p class="hint" style="margin:0 0 10px">' +
-            '① 浏览器打开 <b>mail.qq.com</b> 登录 → 顶部「设置」→「账号」；<br>' +
-            '② 往下找到「POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV 服务」，点 <b>开启</b> SMTP 服务；<br>' +
-            '③ 按提示用手机发一条短信验证，页面会显示一串 <b>16 位授权码</b>（只显示一次，复制下来）；<br>' +
-            '④ 回到这里：账号填 <b>完整邮箱地址</b>，授权码粘贴到「授权码」，点保存 → 点「发一封测试」。' +
-          '</p>' +
-          '<p class="hint" style="margin:0">服务器 <b>smtp.qq.com</b>，端口 <b>465</b>。163 邮箱同理（smtp.163.com，也是授权码）。' +
-          'QQ 邮箱单日发信上限约 500 封，30 人的派单量远远够用，而且不花钱、不经过第三方。</p>' +
-        '</div></div>'
-      : '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">EmailJS 怎么配（约 10 分钟）</h3></div><div class="card-body">' +
-          '<p class="hint" style="margin:0 0 10px">' +
-            '① 打开 <b>emailjs.com</b> 注册 →「Email Services」添加邮箱（QQ/163 要填授权码）→ 记下 <b>Service ID</b>；<br>' +
-            '②「Email Templates」新建模板，主题填 <b>{{subject}}</b>，正文切 HTML 粘贴 <b>{{{message}}}</b>，收件人填 <b>{{to_email}}</b>；<br>' +
-            '③「Account → General」复制 <b>Public Key</b>，三个值填到上面保存。' +
-          '</p>' +
-          '<p class="hint" style="margin:0">免费额度 <b>200 封/月</b>，超了要付费。只是想用 QQ 邮箱发信的话，建议切到「邮箱直连」。</p>' +
-        '</div></div>';
+    const list = state.mailAccounts || [];
+    const usableCount = list.filter(a => a.enabled).length;
+    const owner = isOwnerTeam();
 
     return '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">邮件通知</h3>' +
-        '<span class="tag ' + (ready ? (on ? 'tag-已确认' : 'tag-待确认') : 'tag-已取消') + '">' +
-          (ready ? (on ? '已启用' : '已配置 · 未启用') : '未配置') + '</span></div>' +
+        '<span class="tag ' + (on && usableCount ? 'tag-已确认' : (usableCount ? 'tag-待确认' : 'tag-已取消')) + '">' +
+          (usableCount ? (on ? '已启用' : '已配置 · 未启用') : '未配置') + '</span></div>' +
       '<div class="card-body">' +
         '<div class="list-row" style="padding:0 0 12px;border:0">' +
           '<div class="grow"><div class="nm">启用邮件</div><div class="sub">派单通知维修工、预约确认给业主、每日汇总</div></div>' +
           '<label class="switch"><input type="checkbox" data-act="toggle-email"' + (on ? ' checked' : '') + '><i></i></label>' +
         '</div>' +
-        '<div class="field"><label>发送方式</label>' +
-          '<div style="display:flex;gap:6px">' + modeBtn('smtp', '邮箱直连（推荐）') + modeBtn('emailjs', 'EmailJS 中转') + '</div>' +
-        '</div>' +
-        (mode === 'smtp' ? smtpFields : emailjsFields) +
         '<div class="field"><label>每日汇总收件邮箱</label><input class="input" type="email" data-field="digest_email" value="' + esc(v('digest_email')) + '" placeholder="每天一封派单汇总，可留空"></div>' +
-        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-          '<button class="btn btn-primary btn-sm" data-act="save-email">保存</button>' +
-          '<button class="btn btn-sm" data-act="test-mail">发一封测试</button>' +
-          '<button class="btn btn-sm" data-act="send-digest">发今日汇总</button>' +
-          '<button class="btn btn-sm" data-act="mail-logs">发送记录</button>' +
-        '</div>' +
-      '</div></div>' + help;
+        '<button class="btn btn-primary btn-sm" data-act="save-email">保存</button>' +
+      '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">邮箱服务（' + list.length + '）</h3>' +
+        (owner ? '<button class="btn btn-sm btn-primary" data-act="mail-acc-new">＋ 新增</button>' : '') + '</div>' +
+        '<div class="card-body" style="padding-top:0">' +
+          '<p class="hint" style="margin:0 0 10px">从上往下依次使用：<b>某个邮箱当天额度用完（或报错）就自动换下一个</b>，' +
+            '没人会漏收通知。建议配两个 —— QQ 邮箱单日约 500 封，超了就用备用。</p>' +
+          (list.length
+            ? list.map(a => accountLine(a, owner)).join('')
+            : '<div class="empty" style="padding:26px"><p>还没有邮箱服务</p><span>' +
+              (owner ? '点右上角「＋ 新增」，填一个 QQ 邮箱 + 授权码就能发信' : '需要团队统筹去配一个（发信额度属于系统级配置）') +
+              '</span></div>') +
+          (owner
+            ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">' +
+                '<button class="btn btn-sm" data-act="test-mail">发一封测试</button>' +
+                '<button class="btn btn-sm" data-act="send-digest">发今日汇总</button>' +
+                '<button class="btn btn-sm" data-act="mail-logs">发送记录</button>' +
+              '</div>'
+            : '<p class="hint" style="margin:12px 0 0">发信账号属于系统级配置，只有<b>团队统筹</b>能增删改；' +
+              '你可以在上面「我的通知邮箱」里设置并验证自己的收件邮箱。</p>') +
+        '</div></div>' +
+
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">QQ 邮箱怎么拿授权码（约 3 分钟）</h3></div><div class="card-body">' +
+        '<p class="hint" style="margin:0 0 10px">' +
+          '① 浏览器打开 <b>mail.qq.com</b> 登录 → 顶部「设置」→「账号」；<br>' +
+          '② 往下找到「POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV 服务」，点 <b>开启</b> SMTP 服务；<br>' +
+          '③ 按提示用手机发一条短信验证，页面会显示一串 <b>16 位授权码</b>（只显示一次，复制下来）；<br>' +
+          '④ 回到这里点「＋ 新增」：邮箱填 <b>完整地址</b>，授权码粘贴进去，保存 → 点「测试」。' +
+        '</p>' +
+        '<p class="hint" style="margin:0">QQ 是 <b>smtp.qq.com:465</b>，163 是 <b>smtp.163.com:465</b>，腾讯企业邮是 <b>smtp.exmail.qq.com:465</b>。' +
+        '想要第三方中转就新增时选 EmailJS（免费 200 封/月）。</p>' +
+      '</div></div>';
   }
 
   /* ============================================================
@@ -1123,10 +1178,10 @@
           ' <span class="tag ' + (p.team_role === 'owner' ? 'tag-加急' : (p.team_role === 'admin' ? 'tag-已确认' : 'tag-待确认')) + '">' +
           esc(teamRoleLabel(p.team_role)) + '</span></div>' +
           '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
-        (owner && !me && p.team_role !== 'owner'
+        (admin && !me && p.team_role !== 'owner'
           ? '<button class="btn btn-sm" data-act="member-role" data-id="' + esc(p.id) + '" data-role="' + (p.team_role === 'admin' ? 'member' : 'admin') + '">' +
             (p.team_role === 'admin' ? '降为成员' : '设为管理员') + '</button>' +
-            '<button class="btn btn-sm" data-act="member-owner" data-id="' + esc(p.id) + '">转让队长</button>'
+            (owner ? '<button class="btn btn-sm" data-act="member-owner" data-id="' + esc(p.id) + '">转让队长</button>' : '')
           : '') +
         (admin && !me && p.team_role !== 'owner'
           ? '<button class="btn btn-sm btn-danger" data-act="member-remove" data-id="' + esc(p.id) + '">移出</button>' : '') +
@@ -1181,25 +1236,38 @@
      设置：数据备份
      ============================================================ */
   function dataPane() {
-    const owner = state.profile.team_role === 'owner';
+    const owner = isOwnerTeam();
     const cnt = {
       profiles: state.profiles.length,
       projects: state.projects.length,
       appointments: state.appointments.length,
       off: state.timeOff.length
     };
+    const stats =
+      '<div class="kv"><span>人员</span><b>' + cnt.profiles + ' 条</b></div>' +
+      '<div class="kv"><span>项目</span><b>' + cnt.projects + ' 条</b></div>' +
+      '<div class="kv"><span>预约单</span><b>' + cnt.appointments + ' 条</b></div>' +
+      '<div class="kv"><span>休息日</span><b>' + cnt.off + ' 条</b></div>';
+
+    // 备份/恢复会让数据整体搬走或被覆盖，属于「数据安全」，只有统筹能做
+    if (!owner) {
+      return '<div class="card"><div class="card-head"><h3 class="card-title">数据备份</h3></div><div class="card-body">' +
+          stats +
+          '<div class="notice notice-warn" style="margin-top:14px">' +
+            '导出/导入会动到整个团队的数据（属于数据安全），只有<b>团队统筹</b>能操作。' +
+            '需要备份时找统筹导出；他自己的入口在同一个页面。' +
+          '</div>' +
+        '</div></div>';
+    }
+
     return '<div class="card"><div class="card-head"><h3 class="card-title">导出备份</h3></div><div class="card-body">' +
-        '<div class="kv"><span>人员</span><b>' + cnt.profiles + ' 条</b></div>' +
-        '<div class="kv"><span>项目</span><b>' + cnt.projects + ' 条</b></div>' +
-        '<div class="kv"><span>预约单</span><b>' + cnt.appointments + ' 条</b></div>' +
-        '<div class="kv"><span>休息日</span><b>' + cnt.off + ' 条</b></div>' +
+        stats +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">' +
           '<button class="btn btn-primary btn-sm" data-act="export-json">导出 JSON（本团队）</button>' +
-          (owner ? '<button class="btn btn-sm" data-act="export-db">导出整库 .db</button>' : '') +
+          '<button class="btn btn-sm" data-act="export-db">导出整库 .db</button>' +
         '</div>' +
         '<p class="hint" style="margin:12px 0 0">' +
-          'JSON 只含本团队的数据，适合换服务器、换团队时搬数据；' +
-          (owner ? '.db 是完整数据库文件（含所有团队），适合整机备份。' : '整库 .db 含所有团队数据，只有团队统筹能下载。') +
+          'JSON 只含本团队的数据，适合换服务器、换团队时搬数据；.db 是完整数据库文件（含所有团队），适合整机备份。' +
         '</p>' +
       '</div></div>' +
 
@@ -1304,20 +1372,34 @@
       : '';
 
     const myToken = state.profile.push_token || '';
-    return adminPart +
-      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">我的推送设置</h3></div><div class="card-body">' +
+    const myEmail = String(state.profile.email || '');
+    const verified = !!state.profile.email_verified_at;
+    const emailTag = !myEmail
+      ? '<span class="tag tag-已取消">未填</span>'
+      : (verified ? '<span class="tag tag-已完成">已验证</span>' : '<span class="tag tag-待确认">未验证</span>');
+
+    const myCard = '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">我的通知邮箱</h3>' + emailTag + '</div><div class="card-body">' +
+        '<p class="hint" style="margin:0 0 12px">派单、出发提醒、每日汇总都会发到这个邮箱。<b>填完点「发送验证码」，收到验证码填进来验证一下</b>，确保地址没写错、也确实能收到。</p>' +
         '<div class="field"><label>我的邮箱</label>' +
-          '<input class="input" type="email" data-field="my_email" value="' + esc(state.profile.email || '') + '" placeholder="派单和出发提醒会发到这个邮箱"></div>' +
+          '<div class="team-code-row"><input class="input" type="email" data-field="my_email" value="' + esc(myEmail) + '" placeholder="your@qq.com">' +
+          '<button class="btn btn-sm" data-act="send-email-code">发送验证码</button></div></div>' +
+        '<div class="field"><label>验证码（6 位数字，10 分钟内有效）</label>' +
+          '<div class="team-code-row"><input class="input code-input" data-field="my_email_code" inputmode="numeric" maxlength="6" placeholder="123456">' +
+          '<button class="btn btn-sm" data-act="verify-email-code">验证</button></div>' +
+          (verified ? '<div class="hint">已通过验证，可以放心收派单邮件。</div>' : '') +
+        '</div>' +
         '<div class="field"><label>我的 PushPlus Token（选填）</label>' +
           '<input class="input" data-field="my_push_token" value="' + esc(myToken) + '" placeholder="留空则收不到微信推送"></div>' +
         '<p class="hint" style="margin:-6px 0 12px">Token 获取方式：手机打开 <b>pushplus.plus</b> → 微信扫码登录 → 完成实名 → 复制 token → 关注它的公众号。' +
         '邮箱和 Token 填一个就够，两个都填就两边都收。</p>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-          '<button class="btn btn-primary btn-sm" data-act="save-my-push">保存</button>' +
+          '<button class="btn btn-primary btn-sm" data-act="save-my-push">保存 Token</button>' +
           '<button class="btn btn-sm" data-act="test-push">发一条微信测试</button>' +
           '<button class="btn btn-sm" data-act="enable-desktop">开启电脑弹窗通知</button>' +
         '</div>' +
-      '</div></div>' +
+      '</div></div>';
+
+    return adminPart + myCard +
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">微信里怎么用最顺手</h3></div><div class="card-body"><p class="hint" style="margin:0">' +
         '① 在微信里打开本链接，右上角 <b>···</b> → <b>收藏</b>，下次从「我 → 收藏」一步进来；<br>' +
         '② 想更快的话，<b>···</b> → <b>浮窗</b>，聊天时会挂一个悬浮球；<br>' +
@@ -1341,7 +1423,8 @@
           '<div class="field"><label>姓名</label><input class="input" name="name" value="' + esc(p.name) + '" required maxlength="20"></div>' +
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" inputmode="numeric" value="' + esc(p.phone || '') + '" maxlength="20" placeholder="11 位"></div>' +
         '</div>' +
-        '<div class="field"><label>邮箱</label><input class="input" type="email" name="email" value="' + esc(p.email || '') + '" placeholder="用于收派单和出发提醒"></div>' +
+        '<div class="field"><label>邮箱</label><input class="input" type="email" name="email" value="' + esc(p.email || '') + '" placeholder="用于收派单和出发提醒">' +
+          '<div class="hint">改了邮箱要去「设置 → 通知 → 我的通知邮箱」点一次「发送验证码」验证，验证过地址才算通。</div></div>' +
         '<div class="field"><label>我的排期颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap">' +
           PALETTE.map(c => '<label style="cursor:pointer"><input type="radio" name="color" value="' + c + '"' + ((p.color || '') === c ? ' checked' : '') + ' style="display:none">' +
             '<span class="color-dot" style="width:24px;height:24px;background:' + c + ';display:inline-block;border-radius:50%;outline:' + ((p.color || '') === c ? '2px solid ' + c : 'none') + ';outline-offset:2px"></span></label>').join('') +
@@ -1716,35 +1799,31 @@
   }
 
   /* ============================================================
-     邮件（EmailJS）
-     · 浏览器直连 EmailJS，不需要自建服务端，也不需要邮箱密码；
-     · 只用一个邮件模板，正文在本地拼成 HTML，塞进模板变量 {{{message}}}；
+     邮件
+     · 发信一律交给服务端：账号 / 授权码不下发到浏览器；
+     · 服务端可以配多个邮箱服务，某个额度用完会自动换下一个再发；
      · 每一封都写 email_logs，成功失败都能查，便于排查“没收到”。
      ============================================================ */
-  const MAIL_API = 'https://api.emailjs.com/api/v1.0/email/send';
 
   const mailCfg = () => {
     const s = state.settings || {};
-    const mode = String(s.mail_mode || (s.smtp_host ? 'smtp' : 'emailjs')).toLowerCase() === 'emailjs' ? 'emailjs' : 'smtp';
     return {
       enabled: s.email_enabled === true,
-      mode: mode,
-      host: String(s.smtp_host || '').trim(),
-      port: Number(s.smtp_port || 465),
-      user: String(s.smtp_user || '').trim(),
-      passSet: s.smtp_pass_set === true,
-      from: String(s.smtp_from || s.smtp_user || '').trim(),
-      name: String(s.smtp_name || '速派').trim(),
-      service: String(s.emailjs_service_id || '').trim(),
-      template: String(s.emailjs_template_id || '').trim(),
-      key: String(s.emailjs_public_key || '').trim(),
       digestTo: String(s.digest_email || '').trim()
     };
   };
-  // SMTP 模式：服务器地址 + 邮箱 + 授权码齐了就算配好；EmailJS：三个参数
+  /**
+   * 能不能发信：以服务端 /api/auth/me 的 mail.ready 为准（它知道有几个可用账号）。
+   * 管理员还额外拿到账号列表，本地判断一次更及时（刚加完账号不用重登）。
+   */
   const mailReady = () => {
-    const c = mailCfg();
-    return c.mode === 'smtp' ? !!(c.host && c.user && c.passSet) : !!(c.service && c.template && c.key);
+    if (state.mail && state.mail.ready) return true;
+    return (state.mailAccounts || []).some(a => {
+      if (!a.enabled) return false;
+      return a.kind === 'emailjs'
+        ? !!(a.service_id && a.template_id && a.public_key)
+        : !!(a.host && a.user && a.pass_set);
+    });
   };
   const mailOn = () => mailCfg().enabled && mailReady();
   const isEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v || '').trim());
@@ -1787,89 +1866,30 @@
     '</div>';
   }
 
-  // EmailJS 限流 1 请求/秒，串行排队，避免批量发信时被 429
-  let mailChain = Promise.resolve();
-  let lastMailAt = 0;
-  function mailSlot() {
-    mailChain = mailChain.then(async () => {
-      const wait = 1100 - (Date.now() - lastMailAt);
-      if (wait > 0) await new Promise(r => setTimeout(r, wait));
-      lastMailAt = Date.now();
-    });
-    return mailChain;
-  }
-
-  async function logMail(kind, to, subject, status, detail) {
-    try {
-      await db.from('email_logs').insert({
-        kind: kind,
-        to_email: to,
-        subject: subject,
-        status: status,
-        detail: detail ? String(detail).slice(0, 500) : null
-      });
-    } catch (e) { /* 日志失败不影响发信 */ }
-  }
-
   // 返回 { ok, error }。所有发信都走这里，便于统一处理失败原因
   async function sendMail(opt) {
-    const c = mailCfg();
     if (!mailReady()) return { ok: false, error: '邮件服务未配置' };
     const to = String(opt.to || '').trim();
     if (!isEmail(to)) return { ok: false, error: '收件邮箱格式不对：' + (to || '（空）') };
 
-    // SMTP 直连：交给服务端发（授权码不下发到浏览器，且定时任务共用同一套配置）
-    if (c.mode === 'smtp') {
-      try {
-        const r = await window.__api('/api/mail/send', {
-          method: 'POST',
-          body: JSON.stringify({
-            to: to,
-            toName: opt.toName || '',
-            subject: opt.subject || '速派通知',
-            html: opt.html || '',
-            text: opt.text || '',
-            kind: opt.kind || 'other'
-          })
-        });
-        return r && r.ok ? { ok: true } : { ok: false, error: (r && r.error) || '发送失败' };
-      } catch (e) {
-        return { ok: false, error: String((e && e.message) || e) }; // 服务端已写 email_logs
-      }
-    }
-
-    const payload = {
-      service_id: c.service,
-      template_id: c.template,
-      user_id: c.key,
-      template_params: {
-        to_email: to,
-        to_name: opt.toName || '',
-        subject: opt.subject || '速派通知',
-        message: opt.html || esc(opt.text || ''),
-        plain_text: opt.text || ''
-      }
-    };
-
-    let status = 'sent', detail = '';
+    // 一律交给服务端发：账号/授权码不下发到浏览器，服务端还会在多个邮箱
+    // 之间自动切换（某个额度用完就换下一个），定时任务也用同一套账号。
     try {
-      await mailSlot();
-      const res = await fetch(MAIL_API, {
+      const r = await window.__api('/api/mail/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          to: to,
+          toName: opt.toName || '',
+          subject: opt.subject || '速派通知',
+          html: opt.html || '',
+          text: opt.text || '',
+          kind: opt.kind || 'other'
+        })
       });
-      const txt = await res.text().catch(() => '');
-      if (!res.ok) {
-        status = 'failed';
-        detail = (txt || ('HTTP ' + res.status)).slice(0, 400);
-      }
+      return r && r.ok ? { ok: true, account: r.account } : { ok: false, error: (r && r.error) || '发送失败' };
     } catch (e) {
-      status = 'failed';
-      detail = String((e && e.message) || e).slice(0, 400);
+      return { ok: false, error: String((e && e.message) || e) }; // 服务端已写 email_logs
     }
-    logMail(opt.kind || 'other', to, opt.subject || '', status, detail);
-    return status === 'sent' ? { ok: true } : { ok: false, error: detail };
   }
 
   /* 派单邮件：发给被指派的维修工。mode='remind' 时改为出发提醒文案 */
@@ -1945,7 +1965,7 @@
   /* 每日汇总：一天一封，靠 settings.last_digest_date 去重 */
   async function mailDigest(dateStr, force) {
     const c = mailCfg();
-    if (!(c.service && c.template && c.key)) return { ok: false, error: '邮件服务未配置' };
+    if (!mailReady()) return { ok: false, error: '还没配发信邮箱' };
     if (!isEmail(c.digestTo)) return { ok: false, error: '还没填汇总收件邮箱' };
     const s = state.settings || {};
     if (!force && s.last_digest_date === dateStr) return { ok: false, error: 'already' };
@@ -2110,6 +2130,41 @@
         state.filters = { tech: '', project: '', status: '', q: '' };
         render(); break;
       case 'export-csv': exportCsv(); break;
+      case 'sel-row': {
+        const sid = String(el.getAttribute('data-id'));
+        if (el.checked) state.sel[sid] = true; else delete state.sel[sid];
+        render(); break;
+      }
+      case 'sel-all': {
+        const ids = sortAppts(state.appointments.filter(apptMatchesFilter)).map(a => String(a.id));
+        state.sel = {};
+        if (el.checked) ids.forEach(x => { state.sel[x] = true; });
+        render(); break;
+      }
+      case 'sel-clear': state.sel = {}; render(); break;
+      case 'sel-invert': {
+        const ids = sortAppts(state.appointments.filter(apptMatchesFilter)).map(a => String(a.id));
+        const next = {};
+        ids.forEach(x => { if (!state.sel[x]) next[x] = true; });
+        state.sel = next; render(); break;
+      }
+      case 'sel-range': {
+        const fromEl = $('[data-field="sel-from"]');
+        const toEl = $('[data-field="sel-to"]');
+        const from = fromEl ? fromEl.value : '';
+        const to = toEl ? toEl.value : '';
+        if (!from || !to) { toast('先选起止日期'); return; }
+        if (from > to) { toast('起始日期不能晚于结束日期'); return; }
+        const pick = state.appointments.filter(a => apptMatchesFilter(a) && a.visit_date >= from && a.visit_date <= to);
+        if (!pick.length) { toast('这段时间里没有预约单'); return; }
+        state.sel = {};
+        pick.forEach(a => { state.sel[String(a.id)] = true; });
+        render();
+        toast('已选中 ' + from + ' 至 ' + to + ' 的 ' + pick.length + ' 条', 3000);
+        break;
+      }
+      case 'sel-delete': batchDeleteAppts(); break;
+      case 'sel-status': batchStatusAppts(); break;
       case 'settings-tab': state.settingsTab = el.getAttribute('data-tab'); render(); break;
       case 'logout': doLogout(); break;
       case 'auth-view': e.preventDefault(); state.loginMode = el.getAttribute('data-view') === 'setup' ? 'setup' : 'login'; showAuth(el.getAttribute('data-view')); break;
@@ -2149,12 +2204,32 @@
       case 'save-my-push': saveMyPush(); break;
       case 'test-push': testPush(); break;
       case 'save-email': saveEmail(); break;
-      case 'mail-mode': mailModeDraft = el.getAttribute('data-mode'); render(); break;
-      case 'mail-preset': {
-        const h = $('[data-field="smtp_host"]');
-        const p = $('[data-field="smtp_port"]');
+      case 'send-email-code': sendMyEmailCode(); break;
+      case 'verify-email-code': verifyMyEmail(); break;
+      case 'mail-acc-new': openMailAccountModal(null); break;
+      case 'mail-acc-edit': {
+        const acc = (state.mailAccounts || []).filter(x => String(x.id) === String(el.getAttribute('data-id')))[0];
+        openMailAccountModal(acc || null); break;
+      }
+      case 'mail-acc-save': saveMailAccount(el.getAttribute('data-id')); break;
+      case 'mail-acc-del': delMailAccount(el.getAttribute('data-id')); break;
+      case 'mail-acc-test': testMailAccount(el.getAttribute('data-id'), el.getAttribute('data-label')); break;
+      case 'mail-acc-preset': {
+        const h = $('[data-field="acc_host"]'); const p = $('[data-field="acc_port"]');
         if (h) h.value = el.getAttribute('data-host') || '';
         if (p) p.value = el.getAttribute('data-port') || '465';
+        break;
+      }
+      case 'mail-acc-kind': {
+        const k = el.getAttribute('data-kind') === 'emailjs' ? 'emailjs' : 'smtp';
+        const wrap = $('#acc-kind');
+        if (wrap) wrap.setAttribute('data-kind', k);
+        const smtpBox = $('#acc-smtp'), jsBox = $('#acc-emailjs');
+        if (smtpBox) smtpBox.style.display = k === 'smtp' ? '' : 'none';
+        if (jsBox) jsBox.style.display = k === 'emailjs' ? '' : 'none';
+        $$('[data-act="mail-acc-kind"]').forEach(b => {
+          b.className = 'btn btn-sm' + (b.getAttribute('data-kind') === k ? ' btn-primary' : '');
+        });
         break;
       }
       case 'test-mail': testMail(); break;
@@ -2178,12 +2253,14 @@
       const k = t.getAttribute('data-filter');
       state.filters[k] = t.value;
       if (state.view === 'board' && k === 'q') return;
+      if (state.view === 'list') state.sel = {}; // 换筛选就重新开始选，避免选到看不见的单子
       render();
       return;
     }
     if (t.getAttribute('data-act') === 'team-allow-direct') { setAllowDirect(t.checked); return; }
     if (t.getAttribute('data-act') === 'toggle-notify') { saveNotify(t.checked); return; }
     if (t.getAttribute('data-act') === 'toggle-email') { saveEmail(t.checked); return; }
+    if (t.getAttribute('data-act') === 'mail-acc-toggle') { toggleMailAccount(t.getAttribute('data-id'), t.checked); return; }
     if (t.getAttribute('data-act') === 'on-project') {
       const pid = t.value;
       const f = $('form[data-form="appt"]');
@@ -2201,6 +2278,7 @@
       const v = t.value;
       searchTimer = setTimeout(() => {
         state.filters.q = v;
+        if (state.view === 'list') state.sel = {};
         const pos = t.selectionStart;
         render();
         const n = $('[data-filter="q"]');
@@ -2846,7 +2924,7 @@
       ? await db.from('projects').update(payload).eq('id', Number(id)).select()
       : await db.from('projects').insert(payload).select();
     if (res.error) { toast('保存失败：' + (res.error.message || '')); return; }
-    if (!res.data || !res.data.length) { toast('没有权限，只有统筹管理员能管理项目'); return; }
+    if (!res.data || !res.data.length) { toast('没有权限，只有管理员能管理项目'); return; }
     closeModal(); await loadAll(); render();
     toast('已保存');
   }
@@ -2933,6 +3011,41 @@
     toast('已删除');
   }
 
+  /* ---------- 预约单批量操作 ---------- */
+  async function batchDeleteAppts() {
+    const ids = selectedVisibleIds();
+    if (!ids.length) { toast('先勾选要删的预约单'); return; }
+    const ok = await confirmDialog('删除 ' + ids.length + ' 条预约',
+      '删掉就找不回来了（可以先用「导出 CSV」留一份）。只能删自己创建的，管理员可以删本团队的；没权限的会被跳过。');
+    if (!ok) return;
+    let done = 0, fail = 0;
+    for (const id of ids) {
+      const { data, error } = await db.from('appointments').delete().eq('id', id).select();
+      if (error || !data || !data.length) fail++;
+      else done++;
+    }
+    state.sel = {};
+    await loadAll(); render();
+    toast('已删除 ' + done + ' 条' + (fail ? '，' + fail + ' 条没权限或已不存在' : ''), 3600);
+  }
+
+  async function batchStatusAppts() {
+    const ids = selectedVisibleIds();
+    if (!ids.length) { toast('先勾选要改的预约单'); return; }
+    const sel = $('[data-field="sel-status"]');
+    const status = sel ? sel.value : '';
+    if (STATUSES.indexOf(status) < 0) { toast('请选择一个状态'); return; }
+    let done = 0, fail = 0;
+    for (const id of ids) {
+      const { data, error } = await db.from('appointments').update({ status: status }).eq('id', id).select();
+      if (error || !data || !data.length) fail++;
+      else done++;
+    }
+    state.sel = {};
+    await loadAll(); render();
+    toast('已把 ' + done + ' 条改成「' + status + '」' + (fail ? '，' + fail + ' 条失败' : ''), 3200);
+  }
+
   async function saveNotify(forceEnabled) {
     const el = $('[data-field="pushplus_token"]');
     const enabled = typeof forceEnabled === 'boolean'
@@ -2942,7 +3055,7 @@
     if (el) payload.pushplus_token = el.value.trim() || null;
     const { data, error } = await db.from('settings').update(payload).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
-    if (!data || !data.length) { toast('没有权限，只有统筹管理员能改全局通知'); return; }
+    if (!data || !data.length) { toast('没有权限，只有管理员能改团队通知设置'); return; }
     state.settings = data[0];
     toast('通知设置已保存');
   }
@@ -2952,18 +3065,50 @@
     const em = $('[data-field="my_email"]');
     if (!el && !em) return;
     const token = el ? (el.value.trim() || null) : (state.profile.push_token || null);
-    const email = em ? (em.value.trim() || null) : (state.profile.email || null);
-    if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
-    const patch = { push_token: token, email: email };
+    const typed = em ? em.value.trim() : '';
+    if (typed && !isEmail(typed)) { toast('邮箱格式不对：' + typed); return; }
+    // 邮箱只在真的改了的时候才提交（改了要重新验证，别让「保存」把已验证状态清掉）
+    const patch = { push_token: token };
+    const emailChanged = typed && typed.toLowerCase() !== String(state.profile.email || '').toLowerCase();
+    if (emailChanged) patch.email = typed;
     const { data, error } = await db.from('profiles').update(patch).eq('id', state.profile.id).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
     if (!data || !data.length) { toast('保存失败'); return; }
     state.profile = data[0];
     await loadAll(); render();
-    const has = [];
-    if (email) has.push('邮箱');
-    if (token) has.push('微信');
-    toast(has.length ? '已保存，之后会发到你的' + has.join('和') : '已清空，不会再主动通知你');
+    if (emailChanged) { toast('邮箱已保存，点「发送验证码」验证一下才算生效'); return; }
+    toast(token ? '已保存，之后微信也会推给你' : (state.profile.email ? '已保存' : '已清空，不会再主动通知你'));
+  }
+
+  /* ---------- 邮箱验证：先发验证码，再填回来验证 ---------- */
+  async function sendMyEmailCode() {
+    const em = $('[data-field="my_email"]');
+    const email = em ? em.value.trim() : String(state.profile.email || '');
+    if (!email) { toast('先填一个邮箱'); return; }
+    if (!isEmail(email)) { toast('邮箱格式不对：' + email); return; }
+    toast('正在发送验证码…');
+    try {
+      const r = await window.__api('/api/auth/email/code', { method: 'POST', body: JSON.stringify({ email: email }) });
+      await loadAll();
+      const codeEl = $('[data-field="my_email_code"]');
+      if (codeEl) codeEl.focus();
+      toast('验证码已发到 ' + r.email + (r.account ? '（通过「' + r.account + '」）' : '') + '，10 分钟内有效', 5200);
+    } catch (e) {
+      toast('没发出去：' + String((e && e.message) || e), 6000);
+    }
+  }
+
+  async function verifyMyEmail() {
+    const codeEl = $('[data-field="my_email_code"]');
+    const code = codeEl ? codeEl.value.replace(/\s/g, '') : '';
+    if (!/^\d{6}$/.test(code)) { toast('验证码是 6 位数字'); return; }
+    try {
+      const r = await window.__api('/api/auth/email/verify', { method: 'POST', body: JSON.stringify({ code: code }) });
+      await loadAll(); render();
+      toast('邮箱已验证：' + r.email + '，派单和提醒会发到这里', 4200);
+    } catch (e) {
+      toast(String((e && e.message) || '验证失败'), 4200);
+    }
   }
 
   async function saveEmail(forceEnabled) {
@@ -2972,51 +3117,147 @@
     const enabled = typeof forceEnabled === 'boolean'
       ? forceEnabled
       : !!($('[data-act="toggle-email"]') && $('[data-act="toggle-email"]').checked);
-    const cur = state.settings || {};
-    const savedMode = String(cur.mail_mode || (cur.smtp_host ? 'smtp' : 'emailjs')).toLowerCase() === 'emailjs' ? 'emailjs' : 'smtp';
-    const mode = mailModeDraft || savedMode;
-    const payload = { email_enabled: enabled, mail_mode: mode, updated_at: new Date().toISOString() };
-
+    const payload = { email_enabled: enabled, updated_at: new Date().toISOString() };
     if (has('digest_email')) payload.digest_email = get('digest_email') || null;
     if (payload.digest_email && !isEmail(payload.digest_email)) { toast('汇总邮箱格式不对'); return; }
 
-    if (mode === 'smtp') {
-      payload.smtp_host = get('smtp_host') || null;
-      payload.smtp_port = Number(get('smtp_port') || 465) || 465;
-      payload.smtp_user = get('smtp_user') || null;
-      payload.smtp_from = get('smtp_user') || null;
-      payload.smtp_name = get('smtp_name') || '速派';
-      const pass = get('smtp_pass');
-      if (pass) payload.smtp_pass = pass; // 留空 = 保持原来的授权码
-      if (!payload.smtp_host) { toast('请填 SMTP 服务器，QQ 邮箱是 smtp.qq.com'); return; }
-      if (!payload.smtp_user || !isEmail(payload.smtp_user)) { toast('请填完整的邮箱地址'); return; }
-      if (!pass && cur.smtp_pass_set !== true) { toast('请填授权码（QQ 邮箱在「设置 → 账号」里生成，不是登录密码）'); return; }
-    } else {
-      ['emailjs_service_id', 'emailjs_template_id', 'emailjs_public_key'].forEach(k => {
-        if (has(k)) payload[k] = get(k) || null;
-      });
-    }
-
     const { data, error } = await db.from('settings').update(payload).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
-    if (!data || !data.length) { toast('没有权限，只有统筹管理员能改邮件设置'); return; }
+    if (!data || !data.length) { toast('没有权限，只有团队管理员能改邮件设置'); return; }
     state.settings = data[0];
-    mailModeDraft = null;
     render();
     toast(enabled ? '邮件已保存并启用' : '邮件设置已保存（当前未启用）');
-    if (enabled && mailReady()) setTimeout(() => toast('建议点「发一封测试」确认能收到', 3200), 2200);
+    if (enabled && !mailReady()) {
+      setTimeout(() => toast('还差发信邮箱：下面的「邮箱服务」点「＋ 新增」，填 QQ 邮箱 + 授权码', 4200), 2200);
+    }
+  }
+
+  /* ---------- 邮箱服务（可配多个，前一个额度用完自动换下一个） ---------- */
+  function openMailAccountModal(acc) {
+    const a = acc || {};
+    const isEdit = !!a.id;
+    const kind = a.kind === 'emailjs' ? 'emailjs' : 'smtp';
+    const preset = (label, host, port) =>
+      '<button class="btn btn-sm" type="button" data-act="mail-acc-preset" data-host="' + host + '" data-port="' + port + '">' + label + '</button>';
+    const body =
+      '<div class="form-row">' +
+        '<div class="field"><label>名称（自己认得出就行）</label>' +
+          '<input class="input" data-field="acc_label" value="' + esc(a.label || '') + '" placeholder="主邮箱 / 备用邮箱" maxlength="30"></div>' +
+        '<div class="field"><label>类型</label>' +
+          '<div id="acc-kind" data-kind="' + kind + '" style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm' + (kind === 'smtp' ? ' btn-primary' : '') + '" type="button" data-act="mail-acc-kind" data-kind="smtp">邮箱直连</button>' +
+            '<button class="btn btn-sm' + (kind === 'emailjs' ? ' btn-primary' : '') + '" type="button" data-act="mail-acc-kind" data-kind="emailjs">EmailJS</button>' +
+          '</div></div>' +
+      '</div>' +
+      '<div id="acc-smtp"' + (kind === 'smtp' ? '' : ' style="display:none"') + '>' +
+        '<div class="field"><label>快捷选择</label><div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          preset('QQ 邮箱', 'smtp.qq.com', 465) + preset('163 邮箱', 'smtp.163.com', 465) + preset('腾讯企业邮', 'smtp.exmail.qq.com', 465) +
+        '</div></div>' +
+        '<div class="form-row">' +
+          '<div class="field"><label>SMTP 服务器</label><input class="input" data-field="acc_host" value="' + esc(a.host || 'smtp.qq.com') + '" placeholder="smtp.qq.com"></div>' +
+          '<div class="field"><label>端口</label><input class="input" data-field="acc_port" value="' + esc(a.port || 465) + '" inputmode="numeric" placeholder="465"></div>' +
+        '</div>' +
+        '<div class="field"><label>邮箱账号（完整地址）</label><input class="input" type="email" data-field="acc_user" value="' + esc(a.user || '') + '" placeholder="你的QQ号@qq.com"></div>' +
+        '<div class="field"><label>授权码' + (isEdit && a.pass_set ? '（已保存，留空不修改）' : '') + '</label>' +
+          '<input class="input" type="password" data-field="acc_pass" value="" autocomplete="new-password" placeholder="' +
+            (isEdit && a.pass_set ? '••••••••  留空保持原来的' : '16 位授权码，不是登录密码') + '"></div>' +
+        '<div class="field"><label>发件人显示名</label><input class="input" data-field="acc_from_name" value="' + esc(a.from_name || '速派') + '" placeholder="速派"></div>' +
+      '</div>' +
+      '<div id="acc-emailjs"' + (kind === 'emailjs' ? '' : ' style="display:none"') + '>' +
+        '<div class="field"><label>Service ID</label><input class="input" data-field="acc_service" value="' + esc(a.service_id || '') + '" placeholder="service_xxxxxxx"></div>' +
+        '<div class="field"><label>Template ID</label><input class="input" data-field="acc_template" value="' + esc(a.template_id || '') + '" placeholder="template_xxxxxxx"></div>' +
+        '<div class="field"><label>Public Key</label><input class="input" data-field="acc_public" value="' + esc(a.public_key || '') + '" placeholder="公钥，可公开"></div>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<div class="field"><label>每天最多发多少封（0 = 不限）</label>' +
+          '<input class="input" data-field="acc_limit" value="' + esc(a.daily_limit || 0) + '" inputmode="numeric" placeholder="500"></div>' +
+        '<div class="field"><label>顺序（小的先用）</label>' +
+          '<input class="input" data-field="acc_priority" value="' + esc(a.priority || 100) + '" inputmode="numeric" placeholder="10"></div>' +
+      '</div>' +
+      '<p class="hint" style="margin:0">超限后会自动跳过这个账号，换下一个继续发；第二天自动恢复。' +
+      (isEdit ? '上次使用：' + esc(String(a.last_used_at || '还没用过').slice(0, 16)) : '') + '</p>';
+
+    openModal(modalShell(isEdit ? '编辑邮箱服务' : '新增邮箱服务', body,
+      '<button class="btn" data-act="close-modal">取消</button>' +
+      '<button class="btn btn-primary" data-act="mail-acc-save" data-id="' + (a.id || '') + '">保存</button>'));
+  }
+
+  async function saveMailAccount(id) {
+    const get = f => { const el = $('[data-field="' + f + '"]'); return el ? el.value.trim() : ''; };
+    const kindEl = $('#acc-kind');
+    const kind = kindEl && kindEl.getAttribute('data-kind') === 'emailjs' ? 'emailjs' : 'smtp';
+    const payload = {
+      label: get('acc_label') || null,
+      kind: kind,
+      daily_limit: Number(get('acc_limit') || 0) || 0,
+      priority: Number(get('acc_priority') || 100) || 100,
+      enabled: true
+    };
+    if (kind === 'smtp') {
+      payload.host = get('acc_host') || null;
+      payload.port = Number(get('acc_port') || 465) || 465;
+      payload.user = get('acc_user') || null;
+      payload.from_addr = payload.user;
+      payload.from_name = get('acc_from_name') || '速派';
+      const pass = get('acc_pass');
+      if (pass) payload.pass = pass;
+      if (!payload.host) { toast('请填 SMTP 服务器，QQ 邮箱是 smtp.qq.com'); return; }
+      if (!payload.user || !isEmail(payload.user)) { toast('请填完整的邮箱地址'); return; }
+      const cur = (state.mailAccounts || []).filter(x => String(x.id) === String(id))[0];
+      if (!pass && !(cur && cur.pass_set)) { toast('请填授权码（QQ 邮箱在「设置 → 账号」里生成，不是登录密码）'); return; }
+    } else {
+      payload.service_id = get('acc_service') || null;
+      payload.template_id = get('acc_template') || null;
+      payload.public_key = get('acc_public') || null;
+      if (!payload.service_id || !payload.template_id || !payload.public_key) { toast('EmailJS 三个参数都要填'); return; }
+    }
+
+    const res = id
+      ? await db.from('mail_accounts').update(payload).eq('id', Number(id)).select()
+      : await db.from('mail_accounts').insert(Object.assign({ label: get('acc_label') || '邮箱服务' }, payload)).select();
+    if (res.error) { toast('保存失败：' + (res.error.message || '')); return; }
+    if (!res.data || !res.data.length) { toast('没有权限'); return; }
+    closeModal();
+    // 邮箱服务变了，重新问一次服务端「现在能不能发信」
+    await refreshMailMeta();
+    await loadAll(); render();
+    toast('已保存' + (res.data[0].enabled ? '' : '（未启用）') + '，建议点「测试」确认能收到');
+  }
+
+  async function delMailAccount(id) {
+    const a = (state.mailAccounts || []).filter(x => String(x.id) === String(id))[0] || {};
+    const ok = await confirmDialog('删除邮箱服务', '「' + (a.label || a.user || id) + '」会被删掉，之后不再用它发信。已发出的邮件记录不受影响。');
+    if (!ok) return;
+    const { data, error } = await db.from('mail_accounts').delete().eq('id', Number(id)).select();
+    if (error) { toast('删除失败：' + (error.message || '')); return; }
+    if (!data || !data.length) { toast('没有权限'); return; }
+    await refreshMailMeta(); await loadAll(); render();
+    toast('已删除');
+  }
+
+  async function toggleMailAccount(id, on) {
+    const { error } = await db.from('mail_accounts').update({ enabled: !!on }).eq('id', Number(id)).select();
+    if (error) { toast('保存失败：' + (error.message || '')); return; }
+    await refreshMailMeta(); await loadAll(); render();
+    toast(on ? '已启用这个账号' : '已停用，发信会跳过它');
+  }
+
+  async function refreshMailMeta() {
+    try {
+      const me = await window.__api('/api/auth/me');
+      state.mail = me.mail || { ready: false };
+    } catch (e) { /* ignore */ }
   }
 
   async function testMail() {
     if (!mailReady()) {
-      const c = mailCfg();
-      toast(c.mode === 'smtp' ? '先填 SMTP 服务器、邮箱账号和授权码，点保存' : '请先填写并保存 Service ID / Template ID / Public Key');
+      toast('还没配发信邮箱：去「设置 → 通知 → 邮箱服务」点「＋ 新增」，填 QQ 邮箱 + 授权码');
       return;
     }
     const c = mailCfg();
     const to = isEmail(state.profile.email) ? state.profile.email.trim()
       : (isEmail(c.digestTo) ? c.digestTo : '');
-    if (!to) { toast('先给自己填个邮箱：设置 → 通知 → 我的推送设置，或填汇总邮箱'); return; }
+    if (!to) { toast('先给自己填个邮箱：设置 → 通知 → 我的通知邮箱，或填汇总邮箱'); return; }
     toast('正在发送…');
     const r = await sendMail({
       to: to,
@@ -3030,7 +3271,7 @@
         rows: [
           { k: '发送时间', v: new Date().toLocaleString('zh-CN') },
           { k: '收件人', v: to },
-          { k: '发送方式', v: c.mode === 'smtp' ? '邮箱直连（' + (c.from || c.user) + '）' : 'EmailJS 中转' }
+          { k: '发出账号', v: r.account || '自动选择' }
         ],
         tip: '如果没在收件箱看到，翻一下垃圾邮件，并把发件地址加入白名单。'
       })
@@ -3038,13 +3279,36 @@
     toast(r.ok ? '已发出，去收件箱看看（可能进垃圾箱）' : '发送失败：' + r.error, 5200);
   }
 
+  /* 只测某个账号：失败不切换，好定位是哪个邮箱的问题 */
+  async function testMailAccount(id, label) {
+    const c = mailCfg();
+    const to = isEmail(state.profile.email) ? state.profile.email.trim() : (isEmail(c.digestTo) ? c.digestTo : '');
+    if (!to) { toast('先给自己填个通知邮箱（设置 → 通知 → 我的通知邮箱），再点测试'); return; }
+    toast('正在用「' + (label || '这个账号') + '」发送…');
+    try {
+      const r = await window.__api('/api/mail/accounts/test', {
+        method: 'POST',
+        body: JSON.stringify({ id: Number(id), label: label || '', to: to })
+      });
+      toast(r.ok ? '已通过「' + (r.account || label) + '」发到 ' + r.to + '，去收件箱（含垃圾箱）看看' : '发送失败', r.ok ? 5200 : 2400);
+    } catch (e) {
+      toast('发送失败：' + String((e && e.message) || e), 6000);
+    }
+    await loadAll(); render();
+  }
+
   async function sendDigestNow(btn) {
     if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
-    const r = await mailDigest(todayStr(), true).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+    // 自托管版让服务端发（和定时任务同一套逻辑、同一批发信账号）
+    const run = window.__LOCAL__
+      ? window.__api('/api/mail/digest', { method: 'POST', body: '{}' })
+      : mailDigest(todayStr(), true);
+    const r = await Promise.resolve(run).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
     if (btn) { btn.disabled = false; btn.textContent = '发今日汇总'; }
-    if (r.ok) toast('今日汇总已发送');
-    else if (r.error === 'empty') toast('今天没有未取消的预约，不用发');
-    else toast('没发出去：' + (r.error || '未知原因'), 4600);
+    if (r && r.ok) toast('今日汇总已发送');
+    else if (r && r.error === 'empty') toast('今天没有未取消的预约，不用发');
+    else if (r && r.error === 'already') toast('今天已经发过了');
+    else toast('没发出去：' + ((r && r.error) || '未知原因'), 4600);
   }
 
   async function openMailLogs() {
@@ -3116,6 +3380,8 @@
   async function saveMe(f) {
     const email = (f.elements.email ? String(f.elements.email.value || '') : '').trim();
     if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
+    const oldEmail = String(state.profile.email || '');
+    const emailChanged = (email || '') !== oldEmail;
     const payload = {
       name: (f.elements.name.value || '').trim(),
       phone: (f.elements.phone.value || '').trim() || null,
@@ -3133,7 +3399,9 @@
     if (!data || !data.length) { toast('保存失败'); return; }
     state.profile = data[0];
     renderUserChip(); await loadAll(); render();
-    toast('已保存');
+    toast(emailChanged && email
+      ? '邮箱已改：去「设置 → 通知 → 我的通知邮箱」点「发送验证码」验证一下才算数'
+      : '已保存', emailChanged && email ? 5200 : 2400);
   }
 
   /* ---------- 通知 ---------- */

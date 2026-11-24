@@ -6,10 +6,9 @@
  * 两个都幂等：靠 appointments.reminded_at 和 settings.last_digest_date 去重。
  */
 const { raw } = require('./store');
-const smtp = require('./smtp');
+const mailer = require('./mailer');
 
 const pushApi = 'https://www.pushplus.plus/send';
-const mailApi = 'https://api.emailjs.com/api/v1.0/email/send';
 
 const pad = n => String(n).padStart(2, '0');
 const ymd = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
@@ -74,55 +73,12 @@ async function sendPush(token, title, content) {
   }
 }
 
-async function sendMail(cfg, opt) {
-  if (!mailReady(cfg)) return { ok: false, error: '邮件未配置' };
-  if (!isEmail(opt.to)) return { ok: false, error: '收件邮箱无效' };
-  let status = 'sent', detail = '';
-  try {
-    if (cfg.mode === 'smtp') {
-      const r = await smtp.send({
-        host: cfg.host,
-        port: cfg.port,
-        user: cfg.user,
-        pass: cfg.pass,
-        from: cfg.from || cfg.user,
-        fromName: cfg.name,
-        to: opt.to,
-        toName: opt.toName || '',
-        subject: opt.subject || '速派通知',
-        html: opt.html || '',
-        text: opt.text || ''
-      });
-      if (!r.ok) { status = 'failed'; detail = r.error || '发送失败'; }
-    } else {
-      const res = await fetch(mailApi, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          service_id: cfg.service,
-          template_id: cfg.template,
-          user_id: cfg.key,
-          template_params: {
-            to_email: opt.to,
-            to_name: opt.toName || '',
-            subject: opt.subject || '速派通知',
-            message: opt.html || esc(opt.text || ''),
-            plain_text: opt.text || ''
-          }
-        })
-      });
-      const txt = await res.text().catch(() => '');
-      if (!res.ok) { status = 'failed'; detail = (txt || ('HTTP ' + res.status)).slice(0, 400); }
-    }
-  } catch (e) {
-    status = 'failed';
-    detail = String((e && e.message) || e).slice(0, 400);
-  }
-  try {
-    raw().prepare('INSERT INTO email_logs (team_id, owner_id, kind, to_email, subject, status, detail) VALUES (?,?,?,?,?,?,?)')
-      .run(opt.teamId || null, opt.owner || 'system', opt.kind || 'other', opt.to, opt.subject || '', status, detail || null);
-  } catch (e) { /* ignore */ }
-  return status === 'sent' ? { ok: true } : { ok: false, error: detail };
+async function sendMail(cfgOrTeamId, opt) {
+  // 1.2.5 起统一走 mailer（多账号 + 额度自动切换）；
+  // 老调用方式 sendMail(cfg, opt) 里没有 teamId，就退回单账号直发，保持兼容。
+  const teamId = typeof cfgOrTeamId === 'number' ? cfgOrTeamId : (opt && opt.teamId);
+  if (!teamId) return { ok: false, error: '缺少团队信息，无法选择发信账号' };
+  return mailer.send(teamId, opt);
 }
 
 /**
@@ -130,6 +86,7 @@ async function sendMail(cfg, opt) {
  *   smtp    —— 直连邮箱服务商（QQ/163/企业邮箱），填邮箱 + 授权码即可，无第三方
  *   emailjs —— 第三方中转（老的配置方式，保留兼容）
  * 没显式选模式时：填了 smtp_host 就走 smtp，否则走 emailjs。
+ * 注意：现在真正的发信账号在 mail_accounts 表里（可配多个），这里只用于兼容旧数据。
  */
 const mailCfg = s => {
   s = s || {};
@@ -161,6 +118,7 @@ async function runReminders(teamId) {
   }
   const s = settings(teamId);
   if (s.notify_enabled === 0) return 0;
+  mailer.rollover(teamId);
   const today = ymd(new Date());
   const t = new Date(); t.setDate(t.getDate() + 1);
   const tomorrow = ymd(t);
@@ -170,8 +128,7 @@ async function runReminders(teamId) {
   ).all(teamId, today, tomorrow);
   if (!due.length) return 0;
 
-  const cfg = mailCfg(s);
-  const emailOn = s.email_enabled === 1 && mailReady(cfg);
+  const emailOn = s.email_enabled === 1 && mailer.configured(teamId);
   let sent = 0;
 
   for (const a of due) {
@@ -185,7 +142,7 @@ async function runReminders(teamId) {
       if (ok) did = true;
     }
     if (tech && isEmail(tech.email) && emailOn) {
-      const r = await sendMail(cfg, {
+      const r = await mailer.send(teamId, {
         to: tech.email,
         toName: tech.name,
         owner: tech.id,
@@ -231,8 +188,8 @@ async function runDigest(teamId) {
   }
   const s = settings(teamId);
   if (s.email_enabled !== 1) return false;
-  const cfg = mailCfg(s);
-  if (!mailReady(cfg) || !isEmail(s.digest_email)) return false;
+  mailer.rollover(teamId);
+  if (!mailer.configured(teamId) || !isEmail(s.digest_email)) return false;
 
   const today = ymd(new Date());
   if (s.last_digest_date === today) return false;
@@ -260,7 +217,7 @@ async function runDigest(teamId) {
       '</div>').join('');
   });
 
-  const r = await sendMail(cfg, {
+  const r = await mailer.send(teamId, {
     to: s.digest_email,
     toName: '统筹',
     owner: 'system',

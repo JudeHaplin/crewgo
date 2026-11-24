@@ -8,9 +8,11 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const store = require('./store');
 const auth = require('./auth');
 const jobs = require('./jobs');
+const mailer = require('./mailer');
 const team = require('./team');
 const wechat = require('./wechat');
 const backup = require('./backup');
@@ -145,9 +147,11 @@ const publicProfile = row => ({
   name: row.name,
   role: row.role,
   email: row.email,
+  email_verified: !!row.email_verified_at,
   phone: row.phone,
   color: row.color,
   avatar: row.avatar || null,
+  push_token: row.push_token || null,
   team_id: row.team_id ? Number(row.team_id) : null,
   team_role: row.team_role || 'member',
   need_profile: row.need_profile === 1,
@@ -179,7 +183,8 @@ function sessionOf(row) {
     token: auth.issue(row),
     user: publicProfile(row),
     team: team.publicTeam(t),
-    pending: row.team_id ? null : team.myRequest(row.id)
+    pending: row.team_id ? null : team.myRequest(row.id),
+    mail: { ready: !!row.team_id && mailer.configured(row.team_id) }
   };
 }
 
@@ -279,6 +284,8 @@ async function handleApi(req, res, pathname, url) {
       user: publicProfile(row),
       team: t ? Object.assign(team.publicTeam(t), { stats: team.stats(t.id) }) : null,
       pending: row.team_id ? null : team.myRequest(row.id),
+      // 前端据此决定要不要显示「发派单邮件」这类按钮（配没配发信账号，服务端最清楚）
+      mail: { ready: !!row.team_id && mailer.configured(row.team_id) },
       wechat: wechat.publicCfg(gs())
     });
   }
@@ -574,7 +581,7 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/settings/wechat' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能改');
+    if (!store.isOwner(actor)) return fail(res, 403, '微信登录是整个站点共用的配置，只有团队统筹能改');
     const body = await readBody(req);
     const s = gs();
     const patch = {
@@ -592,7 +599,7 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/backup/export') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能导出');
+    if (!store.isOwner(actor)) return fail(res, 403, '导出会把整个团队的数据下载走，只有团队统筹能操作');
     const fmt = url.searchParams.get('format') === 'db' ? 'db' : 'json';
     if (fmt === 'db') {
       if (!store.isOwner(actor)) return fail(res, 403, '整库文件包含所有团队的数据，只有团队统筹能下载');
@@ -608,7 +615,7 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/backup/import' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isTeamAdmin(actor)) return fail(res, 403, '只有团队管理员能导入');
+    if (!store.isOwner(actor)) return fail(res, 403, '导入会改写/合并团队数据，只有团队统筹能操作');
     const filename = String(url.searchParams.get('filename') || 'upload');
     const dry = url.searchParams.get('dry') === '1';
 
@@ -683,16 +690,23 @@ async function handleApi(req, res, pathname, url) {
     if (!actor) return fail(res, 401, '登录已过期，请重新登录');
     if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
-    if (body && body.values && body.values.pin != null && body.values.pin !== '') {
-      const p = normPin(body.values.pin);
-      const pe = pinError(p);
-      if (pe) return fail(res, 400, pe);
-      body.values.pin_hash = auth.hashPin(p);
-    }
-    if (body && body.values && body.values.phone) {
-      const phe = store.phoneError(body.values.phone);
-      if (phe) return fail(res, 400, phe);
-      body.values.phone = store.normPhone(body.values.phone);
+    // 批量插入时 values 是数组，PIN / 手机号 要逐个处理（否则第一行之后都没写进去）
+    const valList = body && body.values
+      ? (Array.isArray(body.values) ? body.values : [body.values])
+      : [];
+    for (const v of valList) {
+      if (!v || typeof v !== 'object') continue;
+      if (v.pin != null && v.pin !== '') {
+        const p = normPin(v.pin);
+        const pe = pinError(p);
+        if (pe) return fail(res, 400, pe);
+        v.pin_hash = auth.hashPin(p);
+      }
+      if (v.phone) {
+        const phe = store.phoneError(v.phone);
+        if (phe) return fail(res, 400, phe);
+        v.phone = store.normPhone(v.phone);
+      }
     }
     // 写预约单前的排期体检：同一人同一时段不能被派两单，休息日不能派
     const touchesSchedule = body && body.table === 'appointments'
@@ -730,31 +744,126 @@ async function handleApi(req, res, pathname, url) {
     return send(res, 200, result);
   }
 
-  /* 发信统一走服务端：SMTP 直连时授权码不会到浏览器，也能被定时任务复用 */
+  /* 发信统一走服务端：账号密码不会到浏览器，也能被定时任务复用。
+     一个团队可以配多个邮箱服务，全用完/超限了自动换下一个（mailer.send） */
   if (pathname === '/api/mail/send' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '登录已过期，请重新登录');
     if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
-    const row = store.ensureTeamSettings(actor.teamId) || {};
-    const cfg = jobs.mailCfg(row);
-    if (!jobs.mailReady(cfg)) {
-      return fail(res, 400, cfg.mode === 'smtp' ? '邮件还没配好：需要邮箱地址 + 授权码' : 'EmailJS 三个参数没填全');
+    if (!mailer.configured(actor.teamId)) {
+      return fail(res, 400, '邮件还没配好：让团队统筹去「设置 → 通知 → 邮箱服务」填一个（QQ 邮箱 + 授权码就行）');
     }
     const to = String(body.to || '').trim();
     if (!to) return fail(res, 400, '收件邮箱不能为空');
-    const r = await jobs.sendMail(cfg, {
+    const r = await mailer.send(actor.teamId, {
       to,
       toName: body.toName || '',
       subject: body.subject || '速派通知',
       html: body.html || '',
       text: body.text || '',
       kind: body.kind || 'other',
-      owner: actor.id,
-      teamId: actor.teamId
+      owner: actor.id
     });
     if (!r.ok) return fail(res, 502, r.error || '发送失败');
-    return send(res, 200, { ok: true, mode: cfg.mode });
+    return send(res, 200, { ok: true, account: r.account || null });
+  }
+
+  /* 用指定账号发一封测试信：失败不切换，方便定位是哪个邮箱的问题 */
+  if (pathname === '/api/mail/accounts/test' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isOwner(actor)) return fail(res, 403, '邮箱服务只有团队统筹能配置');
+    const body = await readBody(req);
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
+    const to = String(body.to || row.email || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(to)) {
+      return fail(res, 400, '先给自己填一个能收信的邮箱，或直接在测试框里填一个');
+    }
+    const r = await mailer.sendWith(actor.teamId, body.id, {
+      to,
+      toName: row.name || '',
+      owner: actor.id,
+      kind: 'test',
+      subject: '【测试】速派发信账号「' + (body.label || '') + '」正常',
+      html: '<div style="font-family:-apple-system,Segoe UI,PingFang SC,sans-serif;font-size:14px;line-height:1.8;color:#111827">' +
+        '<p>这封是用发信账号 <b>' + String(body.label || '').replace(/[<>&"]/g, '') + '</b> 发出的测试邮件。</p>' +
+        '<p>收到说明这个账号可以用；之后派单、出发提醒、每日汇总都可能走它。</p></div>'
+    });
+    if (!r.ok) return fail(res, 502, r.error || '发送失败');
+    return send(res, 200, { ok: true, to, account: r.account });
+  }
+
+  /* ---------------- 通知邮箱验证（所有人可自己设自己的） ---------------- */
+  if (pathname === '/api/auth/email/code' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!actor.teamId) return fail(res, 403, '请先加入团队');
+    const body = await readBody(req);
+    const email = String(body.email || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail(res, 400, '邮箱格式不对：' + (email || '（空）'));
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
+
+    // 60 秒内只能发一次，避免被当成骚扰邮件源
+    if (row.email_code_sent_at) {
+      const age = Date.now() - new Date(String(row.email_code_sent_at).replace(' ', 'T')).getTime();
+      if (age >= 0 && age < 60 * 1000) {
+        return fail(res, 429, '刚发过一封，' + Math.ceil((60 * 1000 - age) / 1000) + ' 秒后可以再发');
+      }
+    }
+    if (!mailer.configured(actor.teamId)) {
+      return fail(res, 400, '团队还没配发信邮箱，先让团队统筹去「设置 → 通知 → 邮箱服务」配一个，再验证自己的邮箱');
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    const sendRes = await mailer.send(actor.teamId, {
+      to: email,
+      toName: row.name || '',
+      owner: actor.id,
+      kind: 'verify',
+      subject: '【速派】邮箱验证码 ' + code + '（10 分钟内有效）',
+      html: '<div style="font-family:-apple-system,Segoe UI,PingFang SC,sans-serif;font-size:14px;line-height:1.9;color:#111827">' +
+        '<p>' + String(row.name || '').replace(/[<>&"]/g, '') + '，你好：</p>' +
+        '<p>这是你在「速派」设置通知邮箱的验证码，<b>10 分钟内有效</b>：</p>' +
+        '<p style="font-size:30px;font-weight:700;letter-spacing:6px;color:#2b6ef6;margin:14px 0">' + code + '</p>' +
+        '<p style="color:#6b7280;font-size:13px">验证后，派单、出发提醒、每日汇总会发到这个邮箱。如果不是你本人操作，忽略这封邮件即可。</p></div>'
+    });
+    if (!sendRes.ok) {
+      return fail(res, 502, '验证码没发出去：' + (sendRes.error || '未知原因') +
+        (sendRes.error && sendRes.error.indexOf('可用') >= 0 ? '' : '（检查一下管理员配的发信邮箱是否正常）'));
+    }
+    // 邮箱先落库（未验证状态），验证通过后才记 email_verified_at
+    store.raw().prepare(
+      "UPDATE profiles SET email = ?, email_verified_at = NULL, email_code = ?, " +
+      "email_code_exp = datetime('now','localtime','+10 minutes'), email_code_tries = 0, " +
+      "email_code_sent_at = datetime('now','localtime') WHERE id = ?"
+    ).run(email, code, actor.id);
+    log('邮箱验证码已发送（' + actor.name + ' → ' + email + '）');
+    return send(res, 200, { ok: true, email, ttl: 600, account: sendRes.account || null });
+  }
+
+  if (pathname === '/api/auth/email/verify' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const code = String(body.code || '').replace(/\s/g, '');
+    if (!/^\d{6}$/.test(code)) return fail(res, 400, '验证码是 6 位数字');
+    const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
+    if (!row.email_code || !row.email_code_exp) return fail(res, 400, '没有待验证的邮箱，先点「发送验证码」');
+    if (Number(row.email_code_tries || 0) >= 5) return fail(res, 429, '试错次数太多，请重新发送验证码');
+    const exp = new Date(String(row.email_code_exp).replace(' ', 'T')).getTime();
+    if (!(exp > Date.now())) return fail(res, 400, '验证码已过期，请重新发送');
+    if (String(row.email_code) !== code) {
+      store.raw().prepare('UPDATE profiles SET email_code_tries = IFNULL(email_code_tries,0) + 1 WHERE id = ?').run(actor.id);
+      const left = 4 - Number(row.email_code_tries || 0);
+      return fail(res, 400, '验证码不对' + (left > 0 ? '，还能再试 ' + left + ' 次' : '，请重新发送'));
+    }
+    store.raw().prepare(
+      "UPDATE profiles SET email_verified_at = datetime('now','localtime'), email_code = NULL, " +
+      "email_code_exp = NULL, email_code_tries = 0 WHERE id = ?"
+    ).run(actor.id);
+    log('邮箱已验证（' + actor.name + ' → ' + row.email + '）');
+    return send(res, 200, { ok: true, email: row.email });
   }
 
   if (pathname === '/api/mail/digest' && req.method === 'POST') {

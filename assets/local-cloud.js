@@ -116,6 +116,7 @@
         team: out.team || null,
         pending: out.pending || null,
         wechat: out.wechat || { mp: false, qr: false },
+        mail: out.mail || { ready: false },
         access_token: token
       };
       return cachedMeta;
@@ -152,7 +153,7 @@
         try {
           const out = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ name: name, pin: pin }) });
           setToken(out.token);
-          cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: out.token };
+          cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
           return { data: out, error: null };
         } catch (e) {
           return { data: null, error: { message: e.message, status: e.status } };
@@ -162,7 +163,7 @@
         try {
           const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ name: name, pin: pin, phone: phone, teamName: teamName }) });
           setToken(out.token);
-          cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: out.token };
+          cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
           return { data: out, error: null };
         } catch (e) {
           return { data: null, error: { message: e.message, status: e.status } };
@@ -171,12 +172,12 @@
       register: wrap(async (name, pin, phone) => {
         const out = await call('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, pin, phone }) });
         setToken(out.token);
-        cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: out.token };
+        cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
         return out;
       }),
       updateProfile: wrap(async (name, phone) => {
         const out = await call('/api/auth/profile', { method: 'POST', body: JSON.stringify({ name, phone }) });
-        cachedMeta = { user: out.user, team: out.team, pending: out.pending, access_token: getToken() };
+        cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: getToken() };
         return out;
       }),
       /** 微信授权地址；bind=true 表示给当前账号绑定 */

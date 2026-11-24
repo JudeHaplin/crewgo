@@ -128,7 +128,7 @@ function fakeSmtp(authCode) {
     kind: 'test'
   }, admin);
   ok(r1.status === 200 && r1.json.ok === true, '发信接口返回成功', r1.json);
-  ok(r1.json.mode === 'smtp', '走的是 SMTP 模式');
+  ok(typeof r1.json.account === 'string' && r1.json.account.length > 0, '返回了实际使用的发信账号', r1.json.account);
 
   await new Promise(r => setTimeout(r, 200));
   ok(fake.state.authUser === 'sender@qq.com', 'AUTH LOGIN 用户名正确', fake.state.authUser);
