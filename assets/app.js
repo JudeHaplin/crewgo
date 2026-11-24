@@ -612,8 +612,13 @@
 
     // 休息日按天索引，日历格子和小字提示都用它
     const offByDate = {};
-    state.timeOff.forEach(o => { (offByDate[o.off_date] = offByDate[o.off_date] || []).push(o); });
-    const offNames = ds => (offByDate[ds] || []).map(o => (profileById(o.profile_id) || {}).name || o.name || '?');
+    state.timeOff.forEach(o => {
+      // 按人员筛选时只标这个人的休息日，否则「休 2」会让人以为别人也在休
+      if (state.filters.tech && String(o.profile_id) !== String(state.filters.tech)) return;
+      (offByDate[o.off_date] = offByDate[o.off_date] || []).push(o);
+    });
+    const nameOf = o => (profileById(o.profile_id) || {}).name || '已离开的成员';
+    const offNames = ds => (offByDate[ds] || []).map(nameOf);
 
     const td = todayStr();
     let rows = '';
@@ -635,7 +640,10 @@
             '<span class="t">' + esc(a.time_slot) + '</span>' + esc(a.tech_name || '待分配') + '</div>';
         });
         if (evts.length > 3) inner += '<div class="cal-more">+' + (evts.length - 3) + ' 项</div>';
-        if (offByDate[ds] && offByDate[ds].length) inner += '<div class="cal-off">休 ' + offByDate[ds].length + '</div>';
+        const offList = offNames(ds);
+        if (offList.length) {
+          inner += '<div class="cal-off" title="' + esc(offList.join('、')) + ' 休息，这天不排单">休 ' + esc(offList.join('、')) + '</div>';
+        }
         rows += '<div class="' + cls.join(' ') + '" data-act="select-day" data-date="' + ds + '">' + inner + '</div>';
       }
       rows += '</div>';
@@ -688,6 +696,7 @@
         '</div></div>' +
         '<div class="cal-foot">' +
           techProfiles().map(p => '<span class="legend"><i style="background:' + esc(p.color || '#2b6ef6') + '"></i>' + esc(p.name) + '</span>').join('') +
+          '<span class="legend"><i style="background:#fdf6e3;border:1px solid #e7d7a8"></i>休息（不排单）</span>' +
         '</div>' +
       '</div>' +
 
@@ -699,6 +708,28 @@
         (dayList.length ? dayList.map(apptRowHtml).join('') : emptyHtml('这天没有安排', '点右上角可以给这天加一条预约')) +
         (offNames(b.day).length
           ? '<div class="off-note">这天休息：' + esc(offNames(b.day).join('、')) + '（不会被排单）</div>' : '') +
+      '</div>' +
+      soonOffHtml();
+  }
+
+  /** 未来两周的休息日：不用翻月历也能看到谁哪天休，全员可见 */
+  function soonOffHtml() {
+    const from = todayStr(), to = addDays(14);
+    const map = {};
+    state.timeOff.forEach(o => {
+      if (o.off_date < from || o.off_date > to) return;
+      if (state.filters.tech && String(o.profile_id) !== String(state.filters.tech)) return;
+      (map[o.off_date] = map[o.off_date] || []).push((profileById(o.profile_id) || {}).name || '已离开的成员');
+    });
+    const days = Object.keys(map).sort();
+    if (!days.length) return '';
+    return '<div class="card" style="margin-top:16px">' +
+        '<div class="card-head"><h3 class="card-title">近期休息</h3><span class="hint">未来两周，这几天不会给人排单</span></div>' +
+        days.map(d => '<div class="list-row">' +
+          '<div class="grow"><div class="nm">' + esc(dayLabel(d)) +
+            (relDay(d) ? ' <span class="tag tag-待确认">' + esc(relDay(d)) + '</span>' : '') + '</div>' +
+            '<div class="sub">' + esc(map[d].join('、')) + '</div></div>' +
+        '</div>').join('') +
       '</div>';
   }
 

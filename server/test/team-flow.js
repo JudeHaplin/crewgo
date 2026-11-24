@@ -204,6 +204,11 @@ function zip(files) {
   ok(off.status === 200 && off.json.added === 2, '排休 2 天', off.json);
   const offList = await api('/api/schedule/time-off?from=2026-12-01&to=2026-12-31', null, admin);
   ok(offList.json.data.length === 2, '休息日可以查出来');
+  // 休息日是给全队看的：普通成员也要能查到别人的（日历上要标出来）
+  const offSeenByMember = await api('/api/schedule/time-off?from=2026-12-01&to=2026-12-31', null, tech);
+  ok(offSeenByMember.status === 200 && offSeenByMember.json.data.length === 2, '普通成员也能看到全队休息日');
+  const offRaw = await db(tech, { table: 'time_off', action: 'select' });
+  ok(offRaw.status === 200 && offRaw.json.data.length === 2, '成员直接查 time_off 也拿得到（日历数据源）');
   const onOff = await db(admin, {
     table: 'appointments', action: 'insert',
     values: { visit_date: '2026-12-05', time_slot: '上午', address: '7栋', content: '修灯', tech_id: techId, tech_name: '张工' }

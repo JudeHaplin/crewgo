@@ -267,7 +267,9 @@ function click(listeners, act, attrs) {
   }, 'tok-admin');
   const page0 = full.nodes['#page'].innerHTML;
   ok(page0.indexOf('排期看板') >= 0, '主界面渲染排期看板');
-  ok(page0.indexOf('休 1') >= 0, '日历上标出休息日');
+  ok(page0.indexOf('休 张工') >= 0, '日历格子里直接写出「谁」在休息，不只是数量');
+  ok(page0.indexOf('近期休息') >= 0 && page0.indexOf('11月25日') >= 0, '看板有「近期休息」列表，全员可见');
+  ok(page0.indexOf('休息（不排单）') >= 0, '日历图例里说明了休息标记');
   ok(full.nodes['#login-view'].innerHTML === '', '登录页已隐藏');
 
   click(full.listeners, 'nav', { nav: 'settings' });

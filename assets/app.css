@@ -540,10 +540,13 @@ table.tbl tbody tr:hover{background:var(--panel-2)}
   letter-spacing:.22em;font-size:17px;text-transform:uppercase;
 }
 
+/* 日历格子里的休息标记：直接写谁在休，名字太长用省略号，悬停看全名 */
 .cal-off{
   margin-top:2px;font-size:10px;line-height:1.5;color:#8a6d1f;
-  background:#fdf6e3;border-radius:4px;padding:0 3px;display:inline-block;
+  background:#fdf6e3;border:1px solid #efe0bb;border-radius:4px;padding:0 3px;
+  display:block;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
+.cal-off::before{content:'☾ ';opacity:.75}
 .off-note{
   margin-top:10px;padding:9px 12px;border-radius:9px;
   background:#fdf8ec;border:1px solid #f2e6c8;color:#7a5c12;font-size:12.5px;
