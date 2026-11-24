@@ -2,16 +2,17 @@
 /**
  * 团队：数据按团队隔离，注册后必须凭团队码申请、管理员同意才能看到团队数据。
  *   · 团队码：3 位大写字母 + 6 位数字（例：ABC123456），创建团队时随机生成
- *   · 角色：owner（团队统筹，最高权限）> admin（管理员，可审批）> member（普通成员）
+ *   · 角色：owner（统筹管理员，最高权限）> admin（管理员，可审批）> member（普通成员）
  */
 const crypto = require('node:crypto');
 const store = require('./store');
+const auth = require('./auth');
 
 const raw = () => store.raw();
 const bad = store.bad;
 const deny = store.deny;
 
-const ROLE_LABEL = { owner: '团队统筹', admin: '管理员', member: '成员' };
+const ROLE_LABEL = { owner: '统筹管理员', admin: '管理员', member: '成员' };
 const TEAM_ROLES = ['owner', 'admin', 'member'];
 
 function teamById(id) {
@@ -40,7 +41,7 @@ function myRequest(profileId) {
   return row || null;
 }
 
-/** 创建团队：创建人自动成为 ownerd（团队统筹），同时补一行 settings */
+/** 创建团队：创建人自动成为 ownerd（统筹管理员），同时补一行 settings */
 function createTeam(profile, name) {
   const nm = String(name || '').trim();
   if (nm.length < 2) throw bad('团队名称至少 2 个字');
@@ -91,7 +92,7 @@ function attachMember(p, teamId) {
     return { merged: null };
   }
   if (dup.team_role === 'owner' || dup.team_role === 'admin') {
-    throw bad('团队里已经有一位同名的' + (dup.team_role === 'owner' ? '团队统筹' : '管理员') + '「' + dup.name +
+    throw bad('团队里已经有一位同名的' + (dup.team_role === 'owner' ? '统筹管理员' : '管理员') + '「' + dup.name +
       '」。同意前请让统筹先给那一行改名（设置 → 人员），或让对方用原账号登录。');
   }
   raw().prepare('UPDATE appointments SET tech_id = ? WHERE team_id = ? AND tech_id = ?').run(p.id, teamId, dup.id);
@@ -121,7 +122,7 @@ function attachMember(p, teamId) {
 function joinByCode(profile, code, message) {
   if (profile.team_id) throw bad('你已经在一个团队里了');
   const team = teamByCode(code);
-  if (!team) throw bad('团队码不对，请向团队统筹确认（3 位大写字母 + 6 位数字）');
+  if (!team) throw bad('团队码不对，请向统筹管理员确认（3 位大写字母 + 6 位数字）');
   if (team.allow_direct === 1) {
     raw().exec('BEGIN');
     let merged = null;
@@ -160,7 +161,7 @@ function cancelRequest(profile) {
 
 function requireAdmin(actor) {
   if (!actor.teamId) throw deny('请先加入团队');
-  if (!store.isTeamAdmin(actor)) throw deny('只有团队统筹和管理员能操作');
+  if (!store.isTeamAdmin(actor)) throw deny('只有统筹管理员和管理员能操作');
 }
 
 function listRequests(actor) {
@@ -228,9 +229,10 @@ function setRole(actor, profileId, role) {
   if (TEAM_ROLES.indexOf(role) < 0 || role === 'owner') throw bad('只能设为管理员或成员');
   const p = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(profileId), actor.teamId);
   if (!p) throw bad('成员不存在');
-  if (p.team_role === 'owner') throw deny('不能改动团队统筹的身份，需要先转让队长');
+  if (p.team_role === 'owner') throw deny('不能改动统筹管理员的身份，只能由他本人转让');
+  if (p.id === actor.id) throw bad('不能修改自己的身份，让别的管理员来操作');
   raw().prepare('UPDATE profiles SET team_role = ? WHERE id = ?').run(role, p.id);
-  return { ok: true };
+  return { ok: true, role: role };
 }
 
 function removeMember(actor, profileId) {
@@ -238,7 +240,7 @@ function removeMember(actor, profileId) {
   const p = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(profileId), actor.teamId);
   if (!p) throw bad('成员不存在');
   // 只有统筹不能被动：其他管理员之间权限相同，互相也能移出
-  if (p.team_role === 'owner') throw deny('不能移除团队统筹');
+  if (p.team_role === 'owner') throw deny('不能移除统筹管理员');
   raw().prepare('UPDATE profiles SET team_id = NULL, team_role = ?, role = ? WHERE id = ?').run('member', 'tech', p.id);
   return { ok: true };
 }
@@ -246,16 +248,27 @@ function removeMember(actor, profileId) {
 /** 自己退出团队：数据留在团队里，人回到「待加入」状态 */
 function leave(actor) {
   if (!actor.teamId) throw bad('你还没加入团队');
-  if (store.isOwner(actor)) throw bad('你是团队统筹，需要先把队长转给别人或解散团队');
+  if (store.isOwner(actor)) throw bad('你是统筹管理员，需要先把队长转给别人或解散团队');
   raw().prepare("UPDATE profiles SET team_id = NULL, team_role = 'member' WHERE id = ?").run(actor.id);
   return true;
 }
 
-function transferOwner(actor, profileId) {
-  if (!store.isOwner(actor)) throw deny('只有团队统筹能转让');
+/**
+ * 转让统筹管理员：全团队只有一个，不能被「设置」出来，只能由现任统筹亲手交给别人。
+ * 要求双重确认：输入自己的登录 PIN + 手输「确认」两个字，防止误点。
+ */
+function transferOwner(actor, profileId, pin, confirmText) {
+  if (!store.isOwner(actor)) throw deny('只有统筹管理员能转让');
+  if (String(confirmText || '').trim() !== '确认') throw bad('请手动输入「确认」两个字再提交');
+  const me = raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
+  if (!me.pin_hash) throw bad('你还没设置登录 PIN，不能转让');
+  const typed = String(pin || '').trim();
+  if (!typed) throw bad('请输入你的登录 PIN');
+  if (!auth.verifyPin(typed, me.pin_hash)) throw deny('PIN 不对，转让没有执行');
   const p = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(profileId), actor.teamId);
   if (!p) throw bad('成员不存在');
-  if (p.id === actor.id) throw bad('你已经是队长了');
+  if (p.id === actor.id) throw bad('你已经是统筹管理员了');
+  if (p.active === 0) throw bad('这个账号已停用，先启用再转让');
   raw().exec('BEGIN');
   try {
     raw().prepare("UPDATE profiles SET team_role = 'owner', role = 'admin' WHERE id = ?").run(p.id);
@@ -266,6 +279,10 @@ function transferOwner(actor, profileId) {
     raw().exec('ROLLBACK');
     throw e;
   }
+  try {
+    raw().prepare('INSERT INTO notifications (team_id, owner_id, title, body) VALUES (?,?,?,?)')
+      .run(actor.teamId, p.id, '你已成为统筹管理员', actor.name + ' 把统筹管理员转给了你：现在你可以配邮箱服务、导出数据、任免管理员。');
+  } catch (e) { /* 通知失败不影响转让 */ }
   return { ok: true };
 }
 
@@ -278,13 +295,13 @@ function rename(actor, name) {
 }
 
 function setAllowDirect(actor, allow) {
-  if (!store.isOwner(actor)) throw deny('只有团队统筹能改加入方式');
+  if (!store.isOwner(actor)) throw deny('只有统筹管理员能改加入方式');
   raw().prepare('UPDATE teams SET allow_direct = ? WHERE id = ?').run(allow ? 1 : 0, actor.teamId);
   return { ok: true };
 }
 
 function resetCode(actor) {
-  if (!store.isOwner(actor)) throw deny('只有团队统筹能重置团队码');
+  if (!store.isOwner(actor)) throw deny('只有统筹管理员能重置团队码');
   const code = store.newTeamCode();
   raw().prepare('UPDATE teams SET code = ? WHERE id = ?').run(code, actor.teamId);
   return { code };
@@ -292,7 +309,7 @@ function resetCode(actor) {
 
 /** 解散团队：把人踢回未加入，删掉团队数据（含业务数据） */
 function dissolve(actor, confirmName) {
-  if (!store.isOwner(actor)) throw deny('只有团队统筹能解散团队');
+  if (!store.isOwner(actor)) throw deny('只有统筹管理员能解散团队');
   const team = teamById(actor.teamId);
   if (!team) throw bad('团队不存在');
   if (String(confirmName || '').trim() !== team.name) throw bad('团队名称输入不对，已取消');

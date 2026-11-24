@@ -247,6 +247,28 @@ function codeFromRaw(raw) {
   const kickOwner = await api('/api/team/members/remove', { id: setup.json.user.id }, adminTok);
   ok(kickOwner.status === 403 && /统筹/.test(kickOwner.json.error || ''), '管理员不能移出统筹（唯一例外）', kickOwner.json);
 
+  console.log('\n[9] 统筹只能「转让」，不能「设置」；转让要 PIN + 手输「确认」');
+  const asRole = await api('/api/team/members/role', { id: 'p_zhang', role: 'owner' }, owner);
+  ok(asRole.status === 400, '不能把人「设为统筹」，这条路根本不开放', asRole.json);
+  const touchOwner = await api('/api/team/members/role', { id: setup.json.user.id, role: 'admin' }, adminTok);
+  ok(touchOwner.status === 403 && /统筹/.test(touchOwner.json.error || ''), '管理员改不了统筹的身份', touchOwner.json);
+
+  const noConfirm = await api('/api/team/owner', { id: 'p_zhang', pin: '1234' }, owner);
+  ok(noConfirm.status === 400 && /确认/.test(noConfirm.json.error || ''), '没手输「确认」不能转让', noConfirm.json);
+  const badPin = await api('/api/team/owner', { id: 'p_zhang', pin: '0000', confirm: '确认' }, owner);
+  ok(badPin.status === 403 && /PIN/.test(badPin.json.error || ''), 'PIN 不对不能转让', badPin.json);
+  const looseWord = await api('/api/team/owner', { id: 'p_zhang', pin: '1234', confirm: '确认转让' }, owner);
+  ok(looseWord.status === 400, '「确认」必须原样两个字，多字也不行', looseWord.json);
+
+  const moved = await api('/api/team/owner', { id: 'p_zhang', pin: '1234', confirm: '确认' }, owner);
+  ok(moved.status === 200, '统筹成功转让给张工', moved.json);
+  const oldMe = await api('/api/auth/me', null, owner);
+  ok(oldMe.json.user.team_role === 'admin', '原统筹变成管理员');
+  const newMe = await api('/api/auth/me', null, adminTok);
+  ok(newMe.json.user.team_role === 'owner', '张工成为新的统筹管理员');
+  ok((await api('/api/backup/export?format=json', undefined, adminTok)).status === 200, '新统筹能导出数据');
+  ok((await api('/api/backup/export?format=json', undefined, owner)).status === 403, '原统筹（现在的管理员）导不动了');
+
   try { fakeA.srv.close(); fakeB.srv.close(); } catch (e) {}
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);

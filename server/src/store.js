@@ -695,7 +695,7 @@ function assertCan(actor, table, action, payload, filters) {
         const row = (filters || []).find(f => f.col === 'id');
         const target = row ? handle().prepare('SELECT id, team_role FROM profiles WHERE id = ?').get(row.val) : null;
         // 统筹（全团队唯一）不能被删/降级；管理员之间权限相同，可以互相移出
-        if (target && target.team_role === 'owner') throw deny('不能删除团队统筹（队长）');
+        if (target && target.team_role === 'owner') throw deny('不能删除统筹管理员（队长）');
       }
       return;
     }
@@ -713,7 +713,7 @@ function assertCan(actor, table, action, payload, filters) {
   }
 
   if (OWNER_ONLY_WRITE.includes(table)) {
-    if (!isOwner(actor)) throw deny('「' + (OWNER_LABEL[table] || table) + '」涉及系统稳定，只有团队统筹能改');
+    if (!isOwner(actor)) throw deny('「' + (OWNER_LABEL[table] || table) + '」涉及系统稳定，只有统筹管理员能改');
     return;
   }
 

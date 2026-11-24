@@ -26,7 +26,8 @@
   const SLOT_ORDER = { '全天': 0, '上午': 1, '下午': 2, '晚上': 3 };
   const STATUSES = ['待确认', '已确认', '进行中', '已完成', '已取消'];
   const STATUS_NEXT = { '待确认': ['已确认', '已取消'], '已确认': ['进行中', '已完成'], '进行中': ['已完成'] };
-  const ROLE_LABEL = { admin: '统筹管理员', tech: '维修人员', requester: '预约人' };
+  const ROLE_LABEL = { admin: '管理员', tech: '维修人员', requester: '预约人' };
+  const teamRoleLabel = r => ({ owner: '统筹管理员', admin: '管理员', member: '成员' }[r] || '成员');
   const PALETTE = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2', '#d94690', '#65a30d'];
   const DOW = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
@@ -293,7 +294,7 @@
       '<form data-form="team-join" novalidate>' +
         '<div class="field"><label for="tj-code">团队码</label>' +
           '<input class="input code-input" id="tj-code" name="code" placeholder="ABC123456" maxlength="12" autocapitalize="characters" autocomplete="off" spellcheck="false">' +
-          '<div class="hint">3 位大写字母 + 6 位数字，找团队统筹或管理员要。</div></div>' +
+          '<div class="hint">3 位大写字母 + 6 位数字，找统筹管理员或管理员要。</div></div>' +
         '<div class="field"><label for="tj-msg">说明（选填）</label>' +
           '<input class="input" id="tj-msg" name="message" maxlength="60" placeholder="如：水电组 张工"></div>' +
         '<button class="btn btn-primary btn-block" type="submit">提交申请</button>' +
@@ -302,7 +303,7 @@
       '<form data-form="team-create" novalidate>' +
         '<div class="field"><label for="tc-name">团队名称</label>' +
           '<input class="input" id="tc-name" name="name" maxlength="30" placeholder="如：某某物业维修组"></div>' +
-        '<p class="hint" style="margin:-6px 0 12px">创建后你就是<b>团队统筹</b>（最高权限），系统会随机生成团队码，别人凭码申请加入。</p>' +
+        '<p class="hint" style="margin:-6px 0 12px">创建后你就是<b>统筹管理员</b>（最高权限），系统会随机生成团队码，别人凭码申请加入。</p>' +
         '<button class="btn btn-primary btn-block" type="submit">创建团队</button>' +
       '</form>';
     return authCard('加入团队', '数据按团队隔离：没有加入团队前，看不到任何预约和人员资料。',
@@ -318,7 +319,7 @@
     return authCard('等待审批', '',
       '<div class="notice" style="margin-bottom:16px">' +
         '你申请加入 <b>' + esc(p.team_name || p.team_code || '团队') + '</b>，正在等管理员审批。<br>' +
-        '通过后刷新本页就能进入；如果迟迟没人处理，直接催一下团队统筹。' +
+        '通过后刷新本页就能进入；如果迟迟没人处理，直接催一下统筹管理员。' +
       '</div>' +
       '<div style="display:flex;gap:8px">' +
         '<button class="btn btn-primary" style="flex:1" data-act="team-refresh">刷新看看</button>' +
@@ -535,8 +536,8 @@
       return String(a.tech_name || '').localeCompare(String(b.tech_name || ''), 'zh');
     });
   }
-  const isAdmin = () => !!state.profile && (state.profile.team_role === 'owner' || state.profile.team_role === 'admin' || state.profile.role === 'admin');
-  // 团队统筹全团队只有一个：任命管理员、发信邮箱、数据导入导出、微信登录这些
+  const isAdmin = () => !!state.profile && (state.profile.team_role === 'owner' || state.profile.team_role === 'admin');
+  // 统筹管理员全团队只有一个：任命管理员、发信邮箱、数据导入导出、微信登录这些
   // 涉及「系统稳定 / 数据安全」的事只有他能做
   const isOwnerTeam = () => !!state.profile && state.profile.team_role === 'owner';
 
@@ -950,16 +951,17 @@
     const tabs = [
       { k: 'projects', t: '项目' },
       { k: 'people', t: '人员' },
+      { k: 'admins', t: '管理员' },
       { k: 'team', t: '团队' },
       { k: 'notify', t: '通知' },
       { k: 'data', t: '数据备份' },
       { k: 'me', t: '我的资料' }
     ];
-    if (isOwnerTeam()) tabs.splice(5, 0, { k: 'login', t: '登录方式' });
+    if (isOwnerTeam()) tabs.splice(6, 0, { k: 'login', t: '登录方式' });
     return '<div class="page-head"><div><h1 class="page-title">设置</h1>' +
-      '<p class="page-desc">' + esc(ROLE_LABEL[state.profile.role] || '') + ' · ' +
-        (isOwnerTeam() ? '团队统筹：管理员能做的事你都能做，另外独占发信邮箱、微信登录、导入导出'
-          : (isAdmin() ? '团队管理员：可管理项目、人员、排期与通知，也可任免管理员（系统级配置由统筹负责）' : '项目与人员由团队管理员维护')) +
+      '<p class="page-desc">' + esc(teamRoleLabel(state.profile.team_role)) + ' · ' +
+        (isOwnerTeam() ? '统筹管理员：管理员能做的事你都能做，另外独占发信邮箱、微信登录、导入导出'
+          : (isAdmin() ? '管理员：可管理项目、人员、排期与通知，也可任免管理员（系统级配置由统筹负责）' : '项目与人员由管理员维护')) +
         (state.team ? ' · 团队「' + esc(state.team.name) + '」' : '') + '</p></div></div>' +
       '<div class="settings-grid">' +
         '<div class="settings-nav">' + tabs.map(x =>
@@ -972,6 +974,7 @@
   function settingsPane() {
     if (state.settingsTab === 'projects') return projectsPane();
     if (state.settingsTab === 'people') return peoplePane();
+    if (state.settingsTab === 'admins') return adminsPane();
     if (state.settingsTab === 'team') return teamPane();
     if (state.settingsTab === 'notify') return notifyPane();
     if (state.settingsTab === 'data') return dataPane();
@@ -1015,6 +1018,8 @@
         '<span class="avatar" style="background:' + esc(p.color || '#2b6ef6') + ';width:30px;height:30px;font-size:12px">' + esc(String(p.name).slice(0, 1)) + '</span>' +
         '<div class="grow"><div class="nm">' + esc(p.name) +
           (p.id === state.profile.id ? ' <span class="tag tag-已确认">我</span>' : '') +
+          (p.team_role === 'owner' ? ' <span class="tag tag-加急">统筹管理员</span>'
+            : (p.team_role === 'admin' ? ' <span class="tag tag-已确认">管理员</span>' : '')) +
           (p.wx_bound ? ' <span class="tag tag-已确认">微信</span>' : '') +
           (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') +
           (offs.length ? ' <span class="tag tag-待确认">休 ' + offs.length + ' 天</span>' : '') + '</div>' +
@@ -1054,7 +1059,8 @@
       '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">' +
         '人员就是登录账号：<b>姓名 + PIN</b> 登录，登录后自动归到这个团队。<br>' +
         '想临时加个临时工，直接「添加人员」并派单即可；对方要自己登录时，用「注册」再用团队码申请。<br>' +
-        '<b>排休</b>会给这个人写上休息日，日历和派单都会拦住这段时间。' +
+        '<b>排休</b>会给这个人写上休息日，日历和派单都会拦住这段时间。<br>' +
+        '要让人当<b>管理员</b>，去「设置 → 管理员」里点「设为管理员」——这里只管岗位身份，不管权限。' +
       '</p></div></div>';
   }
 
@@ -1121,7 +1127,7 @@
           (list.length
             ? list.map(a => accountLine(a, owner)).join('')
             : '<div class="empty" style="padding:26px"><p>还没有邮箱服务</p><span>' +
-              (owner ? '点右上角「＋ 新增」，填一个 QQ 邮箱 + 授权码就能发信' : '需要团队统筹去配一个（发信额度属于系统级配置）') +
+              (owner ? '点右上角「＋ 新增」，填一个 QQ 邮箱 + 授权码就能发信' : '需要统筹管理员去配一个（发信额度属于系统级配置）') +
               '</span></div>') +
           (owner
             ? '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">' +
@@ -1129,7 +1135,7 @@
                 '<button class="btn btn-sm" data-act="send-digest">发今日汇总</button>' +
                 '<button class="btn btn-sm" data-act="mail-logs">发送记录</button>' +
               '</div>'
-            : '<p class="hint" style="margin:12px 0 0">发信账号属于系统级配置，只有<b>团队统筹</b>能增删改；' +
+            : '<p class="hint" style="margin:12px 0 0">发信账号属于系统级配置，只有<b>统筹管理员</b>能增删改；' +
               '你可以在上面「我的通知邮箱」里设置并验证自己的收件邮箱。</p>') +
         '</div></div>' +
 
@@ -1146,9 +1152,83 @@
   }
 
   /* ============================================================
+     设置：管理员（统筹唯一且只能转让；管理员可多个，由统筹/管理员任免）
+     ============================================================ */
+  function adminsPane() {
+    const actor = state.profile || {};
+    const owner = isOwnerTeam();
+    const canEdit = isAdmin();
+    const rank = r => (r === 'owner' ? 0 : r === 'admin' ? 1 : 2);
+    const list = state.profiles.slice().sort((a, b) =>
+      rank(a.team_role) - rank(b.team_role) || String(a.name).localeCompare(String(b.name), 'zh'));
+
+    const rows = list.map(p => {
+      const me = p.id === actor.id;
+      const role = p.team_role || 'member';
+      const tag = role === 'owner'
+        ? '<span class="tag tag-加急">统筹管理员</span>'
+        : (role === 'admin' ? '<span class="tag tag-已确认">管理员</span>' : '<span class="tag tag-待确认">成员</span>');
+      const note = role === 'owner'
+        ? '全团队只有一个，不能被设置或取消，只能由他本人转让'
+        : (role === 'admin' ? '和统筹一样能管人、管项目、管排期（系统级配置除外）' : '普通成员：看排期、提预约、改状态');
+      let actions = '';
+      if (role === 'owner') {
+        actions = owner ? '<button class="btn btn-sm" data-act="transfer-owner">转让统筹管理员身份</button>' : '';
+      } else if (canEdit && !me) {
+        actions = role === 'admin'
+          ? '<button class="btn btn-sm" data-act="admins-role" data-id="' + esc(p.id) + '" data-role="member">取消管理员</button>'
+          : '<button class="btn btn-sm btn-primary" data-act="admins-role" data-id="' + esc(p.id) + '" data-role="admin">设为管理员</button>';
+      }
+      return '<div class="list-row">' +
+        '<span class="avatar" style="background:' + esc(p.color || '#2b6ef6') + ';width:30px;height:30px;font-size:12px">' + esc(String(p.name).slice(0, 1)) + '</span>' +
+        '<div class="grow"><div class="nm">' + esc(p.name) + ' ' + tag +
+          (me ? ' <span class="tag tag-已确认">我</span>' : '') +
+          (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') + '</div>' +
+          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(note) + '</div></div>' +
+        actions +
+      '</div>';
+    }).join('');
+
+    const adminCount = list.filter(p => p.team_role === 'admin').length;
+
+    return '<div class="card">' +
+        '<div class="card-head"><h3 class="card-title">管理员（' + adminCount + '）</h3>' +
+          '<span class="tag tag-加急">统筹管理员 1</span></div>' +
+        (rows || '<div class="empty"><p>还没有成员</p><span>先用团队码把人拉进来</span></div>') +
+      '</div>' +
+      '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint" style="margin:0">' +
+        '<b>统筹管理员</b>全团队只有一个：不能被「设置」出来，也不能被取消，只能由现任统筹<b>亲手转让</b>' +
+        '（要输入自己的登录 PIN + 手输「确认」）。<br>' +
+        '<b>管理员</b>可以有多个，' + (canEdit ? '在上面的列表里点「设为管理员」即可' : '由统筹管理员或管理员设置') +
+        '；管理员之间权限相同，能管项目、人员、排期和通知，也能任免其他管理员，' +
+        '但不能取消统筹、不能碰系统级配置（发信邮箱、微信登录、导入导出）。<br>' +
+        (canEdit ? '' : '你现在的身份是「' + esc(teamRoleLabel(actor.team_role)) + '」，只能查看，不能调整。') +
+      '</p></div></div>';
+  }
+
+  /* 转让统筹：选人 + 自己的 PIN + 手输「确认」，三重确认防误点 */
+  function openTransferOwnerModal() {
+    const cands = state.profiles.filter(p => p.team_role !== 'owner' && p.active !== false);
+    if (!cands.length) { toast('团队里还没有可以接手的人'); return; }
+    const body =
+      '<p class="hint" style="margin:0 0 12px">转让后<b>你变成管理员</b>，对方成为新的统筹管理员（全团队只能有一个）。' +
+      '对方会收到一条站内通知，这个操作立刻生效。</p>' +
+      '<div class="field"><label>转给谁</label><select class="select" data-field="transfer-to">' +
+        cands.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '（' + esc(teamRoleLabel(p.team_role)) + '）</option>').join('') +
+      '</select></div>' +
+      '<div class="field"><label>你的登录 PIN</label>' +
+        '<input class="input" type="password" data-field="transfer-pin" autocomplete="current-password" placeholder="确认是你本人在操作"></div>' +
+      '<div class="field"><label>手动输入「确认」两个字</label>' +
+        '<input class="input" data-field="transfer-confirm" autocomplete="off" placeholder="确认">' +
+        '<div class="hint">防误点：请原样输入「确认」，不要多加字。</div></div>';
+    openModal(modalShell('转让统筹管理员身份', body,
+      '<button class="btn" data-act="close-modal">取消</button>' +
+      '<button class="btn btn-danger" data-act="transfer-owner-do">确认转让</button>'));
+  }
+
+  /* ============================================================
      设置：团队
      ============================================================ */
-  const teamRoleLabel = r => ({ owner: '团队统筹', admin: '管理员', member: '成员' }[r] || '成员');
 
   function teamPane() {
     const t = state.team || {};
@@ -1178,11 +1258,6 @@
           ' <span class="tag ' + (p.team_role === 'owner' ? 'tag-加急' : (p.team_role === 'admin' ? 'tag-已确认' : 'tag-待确认')) + '">' +
           esc(teamRoleLabel(p.team_role)) + '</span></div>' +
           '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
-        (admin && !me && p.team_role !== 'owner'
-          ? '<button class="btn btn-sm" data-act="member-role" data-id="' + esc(p.id) + '" data-role="' + (p.team_role === 'admin' ? 'member' : 'admin') + '">' +
-            (p.team_role === 'admin' ? '降为成员' : '设为管理员') + '</button>' +
-            (owner ? '<button class="btn btn-sm" data-act="member-owner" data-id="' + esc(p.id) + '">转让队长</button>' : '')
-          : '') +
         (admin && !me && p.team_role !== 'owner'
           ? '<button class="btn btn-sm btn-danger" data-act="member-remove" data-id="' + esc(p.id) + '">移出</button>' : '') +
       '</div>';
@@ -1254,7 +1329,7 @@
       return '<div class="card"><div class="card-head"><h3 class="card-title">数据备份</h3></div><div class="card-body">' +
           stats +
           '<div class="notice notice-warn" style="margin-top:14px">' +
-            '导出/导入会动到整个团队的数据（属于数据安全），只有<b>团队统筹</b>能操作。' +
+            '导出/导入会动到整个团队的数据（属于数据安全），只有<b>统筹管理员</b>能操作。' +
             '需要备份时找统筹导出；他自己的入口在同一个页面。' +
           '</div>' +
         '</div></div>';
@@ -1273,7 +1348,7 @@
 
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">导入 / 恢复</h3></div><div class="card-body">' +
         '<p class="hint" style="margin:0 0 12px">' +
-          '支持 <b>JSON 备份</b>（合并进本团队，不会删已有数据）、<b>.db</b>（整库恢复，覆盖全部数据，仅团队统筹）、' +
+          '支持 <b>JSON 备份</b>（合并进本团队，不会删已有数据）、<b>.db</b>（整库恢复，覆盖全部数据，仅统筹管理员）、' +
           '<b>.xlsx / .csv</b>（表格导入预约单或人员名单）。上传后先给预览，确认了才写库。' +
         '</p>' +
         '<input type="file" id="import-file" class="input" accept=".json,.db,.sqlite,.sqlite3,.csv,.tsv,.txt,.xlsx" style="padding:9px">' +
@@ -1373,7 +1448,7 @@
 
     const myToken = state.profile.push_token || '';
     const myEmail = String(state.profile.email || '');
-    const verified = !!state.profile.email_verified_at;
+    const verified = !!(state.profile.email_verified_at || state.profile.email_verified);
     const emailTag = !myEmail
       ? '<span class="tag tag-已取消">未填</span>'
       : (verified ? '<span class="tag tag-已完成">已验证</span>' : '<span class="tag tag-待确认">未验证</span>');
@@ -1431,9 +1506,10 @@
         '</div></div>' +
         '<button class="btn btn-primary btn-sm" type="submit">保存</button>' +
       '</form>' +
-      '<div class="kv" style="margin-top:18px"><span>我的身份</span><b>' + esc(ROLE_LABEL[p.role] || p.role) + '</b></div>' +
+      '<div class="kv" style="margin-top:18px"><span>团队身份</span><b>' + esc(teamRoleLabel(p.team_role)) + '</b></div>' +
+      '<div class="kv"><span>岗位身份</span><b>' + esc(ROLE_LABEL[p.role] || p.role) + '</b></div>' +
       '<div class="kv"><span>账号状态</span><b>' + (p.active === false ? '已停用' : '正常') + '</b></div>' +
-      '<div class="kv"><span>参与排期</span><b>' + (p.role === 'tech' ? '是' : '否（可被指派）') + '</b></div>' +
+      '<div class="kv"><span>参与排期</span><b>' + (p.role === 'tech' || p.role === 'admin' ? '是' : '否（可被指派）') + '</b></div>' +
       '</div></div>' +
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">修改登录 PIN</h3></div><div class="card-body">' +
         '<div class="form-row">' +
@@ -2181,8 +2257,9 @@
       case 'copy-callback': copyText((state.wxSettings && state.wxSettings.callback) || (location.origin + '/api/auth/wechat/callback')); break;
       case 'req-approve': decideRequest(el.getAttribute('data-id'), true); break;
       case 'req-reject': decideRequest(el.getAttribute('data-id'), false); break;
-      case 'member-role': setMemberRole(el.getAttribute('data-id'), el.getAttribute('data-role')); break;
-      case 'member-owner': transferOwner(el.getAttribute('data-id')); break;
+      case 'admins-role': setMemberRole(el.getAttribute('data-id'), el.getAttribute('data-role')); break;
+      case 'transfer-owner': openTransferOwnerModal(); break;
+      case 'transfer-owner-do': doTransferOwner(); break;
       case 'member-remove': removeMember(el.getAttribute('data-id')); break;
       case 'team-leave': leaveTeam(); break;
       case 'team-dissolve': dissolveTeam(); break;
@@ -2355,7 +2432,7 @@
     }
     state.loginMode = 'login';
     await boot();
-    toast('欢迎，' + name + '。你是团队统筹', 3200);
+    toast('欢迎，' + name + '。你是统筹管理员', 3200);
     if (data && data.team) setTimeout(() => toast('团队码 ' + data.team.code + '，发给同事即可加入', 5200), 1600);
   }
 
@@ -2486,8 +2563,10 @@
   }
 
   async function setMemberRole(id, role) {
-    const label = role === 'admin' ? '设为管理员' : '降为成员';
-    const ok = await confirmDialog(label, '确定要' + label + '吗？管理员可以审批入团申请、管理项目和人员。');
+    const label = role === 'admin' ? '设为管理员' : '取消管理员';
+    const ok = await confirmDialog(label, role === 'admin'
+      ? '设为管理员后，对方能审批入团申请、管理项目/人员/排期和通知，也能任免其他管理员（统筹管理员除外）。'
+      : '取消后对方变回普通成员：能看排期、提预约、改状态，不能再管项目和人员。');
     if (!ok) return;
     try {
       await teamPost('/api/team/members/role', { id, role });
@@ -2496,16 +2575,22 @@
     } catch (e) { toast('操作失败：' + e.message, 4200); }
   }
 
-  async function transferOwner(id) {
-    const p = profileById(id);
-    if (!p) return;
-    const ok = await confirmDialog('转让队长', '把「团队统筹」转给 ' + p.name + '？转让后你变成普通管理员，只有对方能解散团队和重置团队码。');
-    if (!ok) return;
+  async function doTransferOwner() {
+    const toEl = $('[data-field="transfer-to"]');
+    const pinEl = $('[data-field="transfer-pin"]');
+    const cfEl = $('[data-field="transfer-confirm"]');
+    const id = toEl ? toEl.value : '';
+    const pin = pinEl ? String(pinEl.value || '').trim() : '';
+    const typed = cfEl ? String(cfEl.value || '').trim() : '';
+    if (!id) { toast('先选一个接手的人'); return; }
+    if (!pin) { toast('请输入你的登录 PIN'); return; }
+    if (typed !== '确认') { toast('请手动输入「确认」两个字（原样，不要多字）'); return; }
     try {
-      await teamPost('/api/team/owner', { id });
-      await boot();
-      toast('已转让给 ' + p.name);
-    } catch (e) { toast('转让失败：' + e.message, 4200); }
+      await teamPost('/api/team/owner', { id, pin, confirm: typed });
+      closeModal();
+      await boot(); // 自己变成管理员，权限和菜单都要重算
+      toast('已转让，你现在是管理员');
+    } catch (e) { toast('转让失败：' + e.message, 5200); }
   }
 
   async function removeMember(id) {
@@ -2941,6 +3026,10 @@
   }
 
   function openPersonModal(p) {
+    // 岗位身份只分「维修人员 / 预约人」；团队里的管理员身份在「设置 → 管理员」里设。
+    // 老数据里 role='admin' 的人保留原值（置灰不能再选），避免编辑手机号时被悄悄改掉。
+    const legacyAdmin = !!p && p.role === 'admin';
+    const preRole = p && p.role === 'requester' ? 'requester' : 'tech';
     openModal(modalShell(p ? '编辑人员' : '添加人员',
       '<form data-form="person" data-id="' + (p ? esc(p.id) : '') + '">' +
         '<div class="form-row">' +
@@ -2950,9 +3039,10 @@
         '<div class="field"><label>邮箱（选填）</label><input class="input" type="email" name="email" value="' + esc(p ? p.email || '' : '') + '" placeholder="派单和出发提醒会发到这里"></div>' +
         '<div class="field"><label>登录 PIN' + (p ? '（留空则不修改）' : '（至少 4 位）') + '</label><input class="input" name="pin" type="text"' + PIN_ATTRS + ' value="" placeholder="' + (p ? '重设 PIN 时填这里' : '员工用姓名 + PIN 登录') + '">' +
           '<div class="hint">' + PIN_TIP + (p ? '；留空保持原 PIN 不变' : '；留空则用默认 PIN：1234') + '</div></div>' +
-        '<div class="field"><label>身份</label><select class="select" name="role">' +
-          ['tech', 'requester', 'admin'].map(r => '<option value="' + r + '"' + ((p ? p.role : 'tech') === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
-        '</select></div>' +
+        '<div class="field"><label>岗位身份</label><select class="select" name="role">' +
+          (legacyAdmin ? '<option value="admin" selected disabled>管理员（旧身份）</option>' : '') +
+          ['tech', 'requester'].map(r => '<option value="' + r + '"' + (!legacyAdmin && preRole === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
+        '</select><div class="hint">决定他会不会出现在派单下拉里。<b>管理员身份不在这里设</b>，去「设置 → 管理员」。</div></div>' +
         '<div class="field"><label>颜色</label><div style="display:flex;gap:8px;flex-wrap:wrap">' +
           PALETTE.map(c => '<label style="cursor:pointer"><input type="radio" name="color" value="' + c + '"' + ((p && p.color === c) || (!p && c === PALETTE[0]) ? ' checked' : '') + ' style="display:none">' +
             '<span class="color-dot" style="width:24px;height:24px;background:' + c + ';display:inline-block;border-radius:50%"></span></label>').join('') +
@@ -3090,6 +3180,7 @@
     try {
       const r = await window.__api('/api/auth/email/code', { method: 'POST', body: JSON.stringify({ email: email }) });
       await loadAll();
+      render(); // 邮箱已落库（未验证），把卡片上的「未填」换成「未验证」
       const codeEl = $('[data-field="my_email_code"]');
       if (codeEl) codeEl.focus();
       toast('验证码已发到 ' + r.email + (r.account ? '（通过「' + r.account + '」）' : '') + '，10 分钟内有效', 5200);

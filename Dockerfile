@@ -10,6 +10,11 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
+# alpine 默认没有时区库：TZ=Asia/Shanghai 时 musl 找不到 zoneinfo 会退回 UTC，
+# 而 Node 用自己的 ICU 数据按 +8 算 —— 两套时钟差 8 小时（验证码会「一发出就过期」）。
+# 装上 tzdata 让 SQLite 的 localtime 也真的是北京时间。
+RUN apk add --no-cache tzdata
+
 # 先只拷服务端，利用层缓存
 COPY server/package.json ./server/package.json
 COPY server/src ./server/src

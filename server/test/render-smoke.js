@@ -15,7 +15,7 @@ const ok = (cond, name, extra) => {
 function el(id) {
   const store = { innerHTML: '', textContent: '', style: {}, value: '', files: [], type: '', disabled: false };
   const cls = new Set();
-  return Object.assign(store, {
+  const self = Object.assign(store, {
     id,
     classList: {
       add: c => cls.add(c),
@@ -26,7 +26,6 @@ function el(id) {
     _cls: cls,
     addEventListener() {},
     removeEventListener() {},
-    querySelector: () => null,
     querySelectorAll: () => [],
     closest: () => null,
     getAttribute: () => null,
@@ -35,6 +34,10 @@ function el(id) {
     click() {},
     focus() {}
   });
+  // 弹窗挂载时会找 .modal-mask 绑关闭事件，这里给个替身，别让渲染测试炸掉
+  self.querySelector = () => self;
+  self.firstElementChild = self;
+  return self;
 }
 
 function makeEnv(routes, token) {
@@ -277,7 +280,7 @@ function click(listeners, act, attrs) {
   click(full.listeners, 'nav', { nav: 'settings' });
   ok(full.nodes['#page'].innerHTML.indexOf('设置') >= 0, '能切到设置页');
   const tabs = [
-    ['projects', '项目'], ['people', '人员'], ['team', '团队'],
+    ['projects', '项目'], ['people', '人员'], ['admins', '管理员'], ['team', '团队'],
     ['notify', '通知'], ['data', '数据备份'], ['login', '微信登录'], ['me', '我的资料']
   ];
   for (const [tab, word] of tabs) {
@@ -322,6 +325,27 @@ function click(listeners, act, attrs) {
   click(full.listeners, 'sel-clear', { checked: true });
   lh = full.nodes['#page'].innerHTML;
   ok(lh.indexOf('<b>0</b>') >= 0, '清空后回到 0 条');
+
+  console.log('\n[8] 管理员页：统筹只能转让，管理员可以设');
+  click(full.listeners, 'nav', { nav: 'settings' });
+  click(full.listeners, 'settings-tab', { tab: 'admins' });
+  let ah = full.nodes['#page'].innerHTML;
+  ok(ah.indexOf('设为管理员') >= 0, '管理员页能把成员设为管理员');
+  ok(ah.indexOf('转让统筹管理员身份') >= 0, '统筹能在这里转让身份');
+  ok(ah.indexOf('全团队只有一个') >= 0, '写明统筹全团队只有一个、只能转让');
+  ok(ah.indexOf('统筹管理员</span>') >= 0, '统筹那一行只有标签');
+
+  click(full.listeners, 'transfer-owner');
+  const th = full.nodes['#modal-root'].innerHTML;
+  ok(th.indexOf('你的登录 PIN') >= 0, '转让弹窗要输入自己的 PIN');
+  ok(th.indexOf('手动输入「确认」') >= 0, '转让弹窗要手输「确认」');
+  ok(th.indexOf('确认转让') >= 0, '有「确认转让」按钮');
+
+  click(full.listeners, 'settings-tab', { tab: 'people' });
+  click(full.listeners, 'edit-person', { id: 'p_9' });
+  const mh = full.nodes['#modal-root'].innerHTML;
+  ok(mh.indexOf('岗位身份') >= 0, '人员编辑里只有「岗位身份」');
+  ok(mh.indexOf('统筹管理员') < 0 && mh.indexOf('设为管理员') < 0, '人员编辑里不再出现统筹/管理员设置');
 
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);

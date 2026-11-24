@@ -43,6 +43,21 @@ const MIME = {
 const log = msg => console.log(new Date().toLocaleString('zh-CN', { hour12: false }) + '  ' + msg);
 const fail = (res, code, msg) => send(res, code, { error: msg });
 
+/**
+ * 把库里存的时间读成毫秒时间戳。
+ * 新数据存的是 JS 算出来的毫秒数（不受时区影响）；老数据是
+ * SQLite datetime() 的 'YYYY-MM-DD HH:MM:SS' 字符串，按本地时间解释。
+ * 之所以不直接用 SQL 的 localtime：容器里 SQLite 的 localtime 和 Node 的本地时间
+ * 可能不是同一个时区（alpine 没装 tzdata 时差 8 小时），混用会让验证码「一发出就过期」。
+ */
+function timeMs(v) {
+  if (v === null || v === undefined || v === '') return NaN;
+  const s = String(v).trim();
+  if (/^\d{13}$/.test(s)) return Number(s);            // 毫秒
+  if (/^\d{10}$/.test(s)) return Number(s) * 1000;      // 秒
+  return new Date(s.replace(' ', 'T')).getTime();       // 老的本地时间字符串
+}
+
 /* ---------- PIN 规则：只限长度，字母/数字/符号都可以（与前端一致） ---------- */
 const PIN_MIN = 4;
 const PIN_MAX = 32;
@@ -148,6 +163,7 @@ const publicProfile = row => ({
   role: row.role,
   email: row.email,
   email_verified: !!row.email_verified_at,
+  email_verified_at: row.email_verified_at || null,
   phone: row.phone,
   color: row.color,
   avatar: row.avatar || null,
@@ -202,7 +218,7 @@ async function handleApi(req, res, pathname, url) {
     return send(res, 200, { initialized: Number(row.n) > 0, wechat: wechat.publicCfg(gs()), version: VERSION });
   }
 
-  /* 首次初始化：建账号 + 建团队（创建人 = 团队统筹） */
+  /* 首次初始化：建账号 + 建团队（创建人 = 统筹管理员） */
   if (pathname === '/api/auth/setup' && req.method === 'POST') {
     const row = store.raw().prepare('SELECT COUNT(*) AS n FROM profiles').get();
     if (Number(row.n) > 0) return fail(res, 409, '系统已经初始化过了，请直接登录，或用团队码加入');
@@ -532,7 +548,7 @@ async function handleApi(req, res, pathname, url) {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
     const body = await readBody(req);
-    return send(res, 200, team.transferOwner(actor, body.id));
+    return send(res, 200, team.transferOwner(actor, body.id, body.pin, body.confirm));
   }
 
   if (pathname === '/api/team/rename' && req.method === 'POST') {
@@ -581,7 +597,7 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/settings/wechat' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isOwner(actor)) return fail(res, 403, '微信登录是整个站点共用的配置，只有团队统筹能改');
+    if (!store.isOwner(actor)) return fail(res, 403, '微信登录是整个站点共用的配置，只有统筹管理员能改');
     const body = await readBody(req);
     const s = gs();
     const patch = {
@@ -599,10 +615,10 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/backup/export') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isOwner(actor)) return fail(res, 403, '导出会把整个团队的数据下载走，只有团队统筹能操作');
+    if (!store.isOwner(actor)) return fail(res, 403, '导出会把整个团队的数据下载走，只有统筹管理员能操作');
     const fmt = url.searchParams.get('format') === 'db' ? 'db' : 'json';
     if (fmt === 'db') {
-      if (!store.isOwner(actor)) return fail(res, 403, '整库文件包含所有团队的数据，只有团队统筹能下载');
+      if (!store.isOwner(actor)) return fail(res, 403, '整库文件包含所有团队的数据，只有统筹管理员能下载');
       const file = store.snapshot();
       const buf = fs.readFileSync(file);
       return sendFile(res, 200, buf, 'application/x-sqlite3', backup.exportFileName('db'));
@@ -615,7 +631,7 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/backup/import' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isOwner(actor)) return fail(res, 403, '导入会改写/合并团队数据，只有团队统筹能操作');
+    if (!store.isOwner(actor)) return fail(res, 403, '导入会改写/合并团队数据，只有统筹管理员能操作');
     const filename = String(url.searchParams.get('filename') || 'upload');
     const dry = url.searchParams.get('dry') === '1';
 
@@ -625,7 +641,7 @@ async function handleApi(req, res, pathname, url) {
 
     const isDb = /\.(db|sqlite|sqlite3)$/i.test(filename)
       || (buf.length > 16 && String(buf.slice(0, 15)) === 'SQLite format 3');
-    if (isDb && !store.isOwner(actor)) return fail(res, 403, '恢复整库只有团队统筹能操作');
+    if (isDb && !store.isOwner(actor)) return fail(res, 403, '恢复整库只有统筹管理员能操作');
 
     if (isDb) {
       if (dry) return send(res, 200, { kind: 'db', size: buf.length, requiresOwner: true, dry: true });
@@ -752,7 +768,7 @@ async function handleApi(req, res, pathname, url) {
     if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
     if (!mailer.configured(actor.teamId)) {
-      return fail(res, 400, '邮件还没配好：让团队统筹去「设置 → 通知 → 邮箱服务」填一个（QQ 邮箱 + 授权码就行）');
+      return fail(res, 400, '邮件还没配好：让统筹管理员去「设置 → 通知 → 邮箱服务」填一个（QQ 邮箱 + 授权码就行）');
     }
     const to = String(body.to || '').trim();
     if (!to) return fail(res, 400, '收件邮箱不能为空');
@@ -773,7 +789,7 @@ async function handleApi(req, res, pathname, url) {
   if (pathname === '/api/mail/accounts/test' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
-    if (!store.isOwner(actor)) return fail(res, 403, '邮箱服务只有团队统筹能配置');
+    if (!store.isOwner(actor)) return fail(res, 403, '邮箱服务只有统筹管理员能配置');
     const body = await readBody(req);
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
     const to = String(body.to || row.email || '').trim();
@@ -806,13 +822,13 @@ async function handleApi(req, res, pathname, url) {
 
     // 60 秒内只能发一次，避免被当成骚扰邮件源
     if (row.email_code_sent_at) {
-      const age = Date.now() - new Date(String(row.email_code_sent_at).replace(' ', 'T')).getTime();
+      const age = Date.now() - timeMs(row.email_code_sent_at);
       if (age >= 0 && age < 60 * 1000) {
         return fail(res, 429, '刚发过一封，' + Math.ceil((60 * 1000 - age) / 1000) + ' 秒后可以再发');
       }
     }
     if (!mailer.configured(actor.teamId)) {
-      return fail(res, 400, '团队还没配发信邮箱，先让团队统筹去「设置 → 通知 → 邮箱服务」配一个，再验证自己的邮箱');
+      return fail(res, 400, '团队还没配发信邮箱，先让统筹管理员去「设置 → 通知 → 邮箱服务」配一个，再验证自己的邮箱');
     }
 
     const code = String(crypto.randomInt(100000, 1000000));
@@ -833,11 +849,11 @@ async function handleApi(req, res, pathname, url) {
         (sendRes.error && sendRes.error.indexOf('可用') >= 0 ? '' : '（检查一下管理员配的发信邮箱是否正常）'));
     }
     // 邮箱先落库（未验证状态），验证通过后才记 email_verified_at
+    // 有效期用 Node 的时钟算（存毫秒），不依赖数据库的 localtime —— 避免容器时区不同导致算错
     store.raw().prepare(
       "UPDATE profiles SET email = ?, email_verified_at = NULL, email_code = ?, " +
-      "email_code_exp = datetime('now','localtime','+10 minutes'), email_code_tries = 0, " +
-      "email_code_sent_at = datetime('now','localtime') WHERE id = ?"
-    ).run(email, code, actor.id);
+      "email_code_exp = ?, email_code_tries = 0, email_code_sent_at = ? WHERE id = ?"
+    ).run(email, code, String(Date.now() + 10 * 60 * 1000), String(Date.now()), actor.id);
     log('邮箱验证码已发送（' + actor.name + ' → ' + email + '）');
     return send(res, 200, { ok: true, email, ttl: 600, account: sendRes.account || null });
   }
@@ -851,7 +867,7 @@ async function handleApi(req, res, pathname, url) {
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
     if (!row.email_code || !row.email_code_exp) return fail(res, 400, '没有待验证的邮箱，先点「发送验证码」');
     if (Number(row.email_code_tries || 0) >= 5) return fail(res, 429, '试错次数太多，请重新发送验证码');
-    const exp = new Date(String(row.email_code_exp).replace(' ', 'T')).getTime();
+    const exp = timeMs(row.email_code_exp);
     if (!(exp > Date.now())) return fail(res, 400, '验证码已过期，请重新发送');
     if (String(row.email_code) !== code) {
       store.raw().prepare('UPDATE profiles SET email_code_tries = IFNULL(email_code_tries,0) + 1 WHERE id = ?').run(actor.id);
