@@ -371,6 +371,23 @@ function click(listeners, act, attrs) {
   const meh = lk.nodes['#page'].innerHTML;
   ok(meh.indexOf('readonly') >= 0 && meh.indexOf('已锁定') >= 0, '「我的资料」里的邮箱也锁住了，并指向通知页去改');
 
+  console.log('\n[11] 新建预约：项目 / 维修人员必选，预约人自动带出');
+  click(full.listeners, 'nav', { nav: 'list' });
+  click(full.listeners, 'new-appt');
+  const fh = full.nodes['#modal-root'].innerHTML;
+  ok(fh.indexOf('不指定') < 0, '项目下拉不再有「不指定」');
+  ok(fh.indexOf('待分配') < 0, '维修人员下拉不再有「待分配」');
+  ok(fh.indexOf('请选择项目') >= 0 && fh.indexOf('请选择维修人员') >= 0, '两个必选项都换成「请选择…」占位');
+  ok(fh.indexOf('req-mark') >= 0, '必选字段带红色星号');
+  ok(fh.indexOf('value="王建国"') >= 0 && fh.indexOf('value="13800000001"') >= 0, '预约人和电话默认填成当前登录的人');
+  ok(fh.indexOf('预约人电话') >= 0, '表单里有「预约人电话」');
+  ok(fh.indexOf('可以改成业主或现场联系人') >= 0, '提示可以改成现场联系人');
+
+  click(full.listeners, 'open-appt', { id: '1' });
+  const dh = full.nodes['#modal-root'].innerHTML;
+  ok(dh.indexOf('预约人') >= 0, '预约详情里有「预约人」');
+  ok(dh.indexOf('刘女士') >= 0 && dh.indexOf('13800000001') >= 0, '详情里预约人的姓名和电话都在');
+
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 })();

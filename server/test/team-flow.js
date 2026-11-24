@@ -275,6 +275,18 @@ function zip(files) {
   });
   ok((await dupCsv.json()).skip === 2, '重复导入会被跳过');
 
+  // 导出的表头是「预约人 / 预约人电话」，再导回去要能认，而且电话列不能串到姓名里
+  const csv2 = '日期,时段,项目,维修人员,地址,报修内容,预约人,预约人电话\r\n' +
+    '2026-12-12,上午,阳光小区,张工,7栋202,门锁坏,陈先生,13900000013\r\n';
+  const r2 = await fetch(BASE + '/api/backup/import?filename=预约2.csv&dry=0', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + admin }, body: csv2
+  });
+  const j2 = await r2.json();
+  ok(r2.status === 200 && j2.add === 1, '「预约人 / 预约人电话」表头也能导入', j2);
+  const imp = (await db(admin, { table: 'appointments', action: 'select' })).json.data.filter(a => a.visit_date === '2026-12-12')[0];
+  ok(!!imp && imp.contact_name === '陈先生' && imp.contact_phone === '13900000013', '预约人姓名与电话没有串列',
+    imp && { name: imp.contact_name, phone: imp.contact_phone });
+
   const mp = await fetch(BASE + '/api/backup/import?filename=人员.csv&dry=0', {
     method: 'POST', headers: { Authorization: 'Bearer ' + admin },
     body: '姓名,手机号,身份,PIN\r\n孙工,13800000011,维修人员,8888\r\n'

@@ -871,7 +871,7 @@
         '</div>' +
       '</div>' +
       '<div class="filterbar">' +
-        '<input class="input" data-filter="q" placeholder="搜索地址 / 事项 / 联系人" value="' + esc(state.filters.q) + '">' +
+        '<input class="input" data-filter="q" placeholder="搜索地址 / 事项 / 预约人" value="' + esc(state.filters.q) + '">' +
         '<select class="select" data-filter="project"><option value="">全部项目</option>' +
           state.projects.filter(p => p.active !== false).map(p =>
             '<option value="' + p.id + '"' + (String(state.filters.project) === String(p.id) ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
@@ -886,7 +886,7 @@
       '</div>' +
       '<div class="card">' + selBar + '<div class="table-wrap">' +
         (list.length
-          ? '<table class="tbl"><thead><tr><th class="sel-cell"></th><th>日期</th><th>项目</th><th>人员</th><th>地址</th><th>事项</th><th>联系人</th><th>状态</th></tr></thead><tbody>' + rows + '</tbody></table>'
+          ? '<table class="tbl"><thead><tr><th class="sel-cell"></th><th>日期</th><th>项目</th><th>人员</th><th>地址</th><th>事项</th><th>预约人</th><th>状态</th></tr></thead><tbody>' + rows + '</tbody></table>'
           : emptyHtml('没有符合条件的预约', '调整筛选条件，或新建一条预约')) +
       '</div></div>';
   }
@@ -1350,7 +1350,7 @@
 
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">表格怎么填</h3></div><div class="card-body">' +
         '<p class="hint" style="margin:0 0 8px"><b>预约单表</b>（第一行是表头，列名认这些）：<br>' +
-          '日期（必填，2026-11-24 / 2026/11/24 / 11月24日 都行）、时段（上午/下午/晚上/全天）、项目、维修人员、地址、报修内容、联系人、联系电话、状态、优先级、备注</p>' +
+          '日期（必填，2026-11-24 / 2026/11/24 / 11月24日 都行）、时段（上午/下午/晚上/全天）、项目、维修人员、地址、报修内容、预约人（旧表头「联系人」也认）、预约人电话、状态、优先级、备注</p>' +
         '<p class="hint" style="margin:0 0 8px"><b>人员表</b>：姓名（必填）、手机号（11 位）、邮箱、身份（维修人员/预约人/统筹管理员）、PIN（留空默认 1234）</p>' +
         '<p class="hint" style="margin:0">表格里出现的新项目、新维修人员会自动建档；同一个人同一天同一时段重复的行会被跳过。</p>' +
       '</div></div>' +
@@ -1583,15 +1583,21 @@
     a = a || {};
     const projectOpts = state.projects.filter(p => p.active !== false);
     const techOpts = techProfiles();
+    // 项目和维修人员都是必选项：只留一个禁用的占位项，没选就提交不了（不再有「不指定 / 待分配」）
+    const projPlaceholder = projectOpts.length ? '请选择项目' : '还没有项目，先去「设置 → 项目」建一个';
+    const techPlaceholder = techOpts.length ? '请选择维修人员' : '还没有维修人员，先去「设置 → 人员」添加';
+    // 新建时「预约人」默认就是当前登录的人，可以改成现场联系人
+    const cName = a.contact_name || (a.id ? '' : (state.profile.name || ''));
+    const cPhone = a.contact_phone || (a.id ? '' : (state.profile.phone || ''));
     return modalShell((a.id ? '编辑预约' : '新建预约'),
       '<form data-form="appt" data-id="' + (a.id || '') + '">' +
         '<div class="form-row">' +
-          '<div class="field"><label>项目</label><select class="select" name="project_id" data-act="on-project">' +
-            '<option value="">不指定</option>' +
+          '<div class="field"><label>项目 <i class="req-mark">*</i></label><select class="select" name="project_id" data-act="on-project" required>' +
+            '<option value="" disabled' + (a.project_id ? '' : ' selected') + '>' + esc(projPlaceholder) + '</option>' +
             projectOpts.map(p => '<option value="' + p.id + '"' + (String(a.project_id) === String(p.id) ? ' selected' : '') + '>' + esc(p.name) + '</option>').join('') +
           '</select></div>' +
-          '<div class="field"><label>维修人员</label><select class="select" name="tech_id">' +
-            '<option value="">待分配</option>' +
+          '<div class="field"><label>维修人员 <i class="req-mark">*</i></label><select class="select" name="tech_id" required>' +
+            '<option value="" disabled' + (a.tech_id ? '' : ' selected') + '>' + esc(techPlaceholder) + '</option>' +
             techOpts.map(p => '<option value="' + esc(p.id) + '"' + (String(a.tech_id) === String(p.id) ? ' selected' : '') + '>' + esc(p.name) + '（' + esc(ROLE_LABEL[p.role] || '') + '）</option>').join('') +
           '</select></div>' +
         '</div>' +
@@ -1605,10 +1611,11 @@
         '<div class="field"><label>维修地址</label><input class="input" name="address" value="' + esc(a.address || '') + '" placeholder="小区 / 楼栋 / 门牌"></div>' +
         '<div class="field"><label>报修内容</label><textarea class="textarea" name="content" placeholder="哪里坏了，需要带什么材料">' + esc(a.content || '') + '</textarea></div>' +
         '<div class="form-row">' +
-          '<div class="field"><label>联系人</label><input class="input" name="contact_name" value="' + esc(a.contact_name || '') + '"></div>' +
-          '<div class="field"><label>联系电话</label><input class="input" name="contact_phone" type="tel" value="' + esc(a.contact_phone || '') + '"></div>' +
+          '<div class="field"><label>预约人</label><input class="input" name="contact_name" value="' + esc(cName) + '" placeholder="谁报的修 / 谁负责对接"></div>' +
+          '<div class="field"><label>预约人电话</label><input class="input" name="contact_phone" type="tel" value="' + esc(cPhone) + '" placeholder="上门前会打这个号码"></div>' +
         '</div>' +
-        '<div class="field"><label>联系邮箱（选填，用于给业主发预约确认）</label><input class="input" type="email" name="contact_email" value="' + esc(a.contact_email || '') + '" placeholder="业主的邮箱，填了才会发确认邮件"></div>' +
+        (a.id ? '' : '<div class="hint" style="margin:-8px 0 12px">默认填的是你自己的姓名和电话，可以改成业主或现场联系人。</div>') +
+        '<div class="field"><label>预约人邮箱（选填，用于给预约人发预约确认）</label><input class="input" type="email" name="contact_email" value="' + esc(a.contact_email || '') + '" placeholder="填了才会发确认邮件"></div>' +
         '<div class="form-row">' +
           '<div class="field"><label>优先级</label><select class="select" name="priority">' +
             ['普通', '加急'].map(s => '<option' + ((a.priority || '普通') === s ? ' selected' : '') + '>' + s + '</option>').join('') +
@@ -1642,8 +1649,8 @@
       line('维修人员', a.tech_name || '待分配') +
       line('上门时间', a.visit_date + ' ' + a.time_slot) +
       line('报修内容', a.content || '—') +
-      line('联系人', (a.contact_name || '') + (a.contact_phone ? '　' + (a.contact_phone) : '')) +
-      (a.contact_email ? line('联系邮箱', a.contact_email) : '') +
+      line('预约人', [a.contact_name, a.contact_phone].filter(Boolean).join('　') || '—') +
+      (a.contact_email ? line('预约人邮箱', a.contact_email) : '') +
       (a.note ? line('备注', a.note) : '') +
       line('创建人', (a.creator_name || '—') + ' · ' + String(a.created_at || '').slice(0, 16).replace('T', ' ')) +
       (next.length ? '<div class="status-quick">' + next.map(s =>
@@ -1747,6 +1754,13 @@
     refreshApptCheck();
   }
 
+  /** 校验没通过时把光标送到出问题的那个下拉，省得自己找 */
+  function focusField(name) {
+    const f = $('form[data-form="appt"]');
+    const el = f && f.elements ? f.elements[name] : null;
+    if (el && typeof el.focus === 'function') el.focus();
+  }
+
   /** 冲突确认文案：把已有单列清楚，让人知道自己在覆盖什么 */
   function conflictText(r) {
     if (r.off) {
@@ -1760,8 +1774,16 @@
 
   async function saveAppt(id) {
     const payload = readApptForm();
+    // 项目和维修人员是必选，不能是「不指定 / 待分配」
+    if (!payload.project_id) { toast('请选择项目（必选）'); focusField('project_id'); return; }
+    if (!payload.tech_id) { toast('请选择维修人员（必选）'); focusField('tech_id'); return; }
     if (!payload.visit_date) { toast('请选择上门日期'); return; }
     if (!payload.address && !payload.content) { toast('请填写地址或报修内容'); return; }
+    // 预约人留空时兜底用当前登录的人，保证详情和通知里一定有联系人
+    if (!id) {
+      if (!payload.contact_name) payload.contact_name = state.profile.name || null;
+      if (!payload.contact_phone) payload.contact_phone = state.profile.phone || null;
+    }
 
     // 先在本地算一遍（数据都在手上，不用等网络）
     const local = apptConflictNow();
@@ -1863,7 +1885,7 @@
       '时间：' + a.visit_date + ' ' + a.time_slot,
       '地址：' + (a.address || '未填'),
       '事项：' + (a.content || '未填'),
-      '联系：' + [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim(),
+      '预约人：' + [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim(),
       a.note ? '备注：' + a.note : ''
     ].filter(Boolean).join('\n');
   }
@@ -2012,7 +2034,7 @@
           { k: '上门时间', v: when },
           { k: '地址', v: a.address || '待填' },
           { k: '报修内容', v: a.content || '待填' },
-          { k: '联系人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() },
+          { k: '预约人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() },
           { k: '备注', v: a.note || '' },
           { k: '单号', v: '#' + a.id }
         ],
@@ -2046,6 +2068,7 @@
           { k: '地址', v: a.address || '' },
           { k: '维修事项', v: a.content || '' },
           { k: '项目', v: a.project_name || '' },
+          { k: '预约人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() },
           { k: '单号', v: '#' + a.id }
         ],
         tip: '如果这个时间不方便，请提前告知，我们可以改期。',
@@ -2963,7 +2986,7 @@
 
   function exportCsv() {
     const list = sortAppts(state.appointments.filter(apptMatchesFilter));
-    const head = ['日期', '时段', '项目', '维修人员', '地址', '报修内容', '联系人', '联系电话', '状态', '优先级', '备注', '创建人'];
+    const head = ['日期', '时段', '项目', '维修人员', '地址', '报修内容', '预约人', '预约人电话', '状态', '优先级', '备注', '创建人'];
     const rows = list.map(a => [a.visit_date, a.time_slot, a.project_name, a.tech_name, a.address, a.content, a.contact_name, a.contact_phone, a.status, a.priority, a.note, a.creator_name]);
     const csv = [head].concat(rows).map(r => r.map(v => '"' + String(v === null || v === undefined ? '' : v).replace(/"/g, '""') + '"').join(',')).join('\r\n');
     const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });

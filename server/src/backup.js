@@ -151,8 +151,8 @@ const ALIASES = {
   tech_name: ['维修人员', '人员', '维修工', '师傅', '工程师', '负责人', 'tech'],
   address: ['地址', '上门地址', '详细地址', 'address'],
   content: ['维修项目', '报修项目', '维修内容', '报修内容', '内容', '事项', '问题', '问题描述', '故障', 'content'],
-  contact_name: ['联系人', '业主', '客户', '报修人', 'contact'],
-  contact_phone: ['联系电话', '电话', '手机号', '手机', '联系方式', 'phone'],
+  contact_name: ['预约人', '联系人', '业主', '客户', '报修人', 'contact'],
+  contact_phone: ['预约人电话', '预约电话', '联系电话', '电话', '手机号', '手机', '联系方式', 'phone'],
   status: ['状态', '进度', 'status'],
   priority: ['优先级', '紧急程度', 'priority'],
   note: ['备注', '说明', 'note'],
@@ -172,7 +172,9 @@ function normKey(s) { return String(s || '').toLowerCase().replace(/[\s\-_()（�
 const LOOSE_SKIP = {
   time_slot: /创建|修改|更新|录入|日期|date/i,
   visit_date: /创建|修改|更新|录入/i,
-  content: /创建|修改/
+  content: /创建|修改/,
+  // 「预约人电话」不能被当成「预约人」姓名列
+  contact_name: /电话|手机|联系方式|号码|phone/i
 };
 
 function pickCol(header, field) {

@@ -36,7 +36,7 @@ function apptText(a) {
     '时间：' + a.visit_date + ' ' + a.time_slot,
     '地址：' + (a.address || '未填'),
     '事项：' + (a.content || '未填'),
-    '联系：' + [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim()
+    '预约人：' + [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim()
   ].filter(Boolean).join('\n');
 }
 
@@ -156,7 +156,7 @@ async function runReminders(teamId) {
             { k: '上门时间', v: when + ' ' + a.time_slot },
             { k: '地址', v: a.address || '待填' },
             { k: '报修内容', v: a.content || '待填' },
-            { k: '联系人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() }
+            { k: '预约人', v: [(a.contact_name || ''), (a.contact_phone || '')].join(' ').trim() }
           ]
         })
       });
@@ -213,7 +213,7 @@ async function runDigest(teamId) {
       '<div style="font-size:13px;color:#111827;font-weight:600">' + (i + 1) + '. ' + esc(a.time_slot || '') + ' · ' +
       esc(a.address || '地址未填') + (a.priority === '加急' ? ' <span style="color:#e5484d">加急</span>' : '') + '</div>' +
       '<div style="font-size:13px;color:#4b5563;margin-top:3px">' + esc(a.content || '—') + '</div>' +
-      (a.contact_phone ? '<div style="font-size:12px;color:#9aa1ad;margin-top:3px">' + esc([(a.contact_name || ''), a.contact_phone].join(' ').trim()) + '</div>' : '') +
+      ((a.contact_name || a.contact_phone) ? '<div style="font-size:12px;color:#9aa1ad;margin-top:3px">预约人：' + esc([(a.contact_name || ''), a.contact_phone].join(' ').trim()) + '</div>' : '') +
       '</div>').join('');
   });
 
