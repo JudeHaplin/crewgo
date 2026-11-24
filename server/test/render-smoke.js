@@ -266,7 +266,7 @@ function click(listeners, act, attrs) {
       if (table === 'appointments') return { data: [apptRow] };
       if (table === 'settings') return { id: 1, team_id: 1, notify_enabled: 1, email_enabled: 0, smtp_pass_set: false };
       if (table === 'notifications') return { data: [] };
-      if (table === 'time_off') return { data: [{ id: 1, team_id: 1, profile_id: 'p_9', off_date: '2026-11-25', reason: '调休' }] };
+      if (table === 'time_off') return { data: [{ id: 1, team_id: 1, profile_id: 'p_9', off_date: '2026-11-25', part: '全天', reason: '调休' }] };
       return { data: [] };
     }
     return undefined;
@@ -380,7 +380,8 @@ function click(listeners, act, attrs) {
   ok(fh.indexOf('待分配') < 0, '维修人员下拉不再有「待分配」');
   ok(fh.indexOf('请选择项目') >= 0 && fh.indexOf('请选择维修人员') >= 0, '两个必选项都换成「请选择…」占位');
   ok(fh.indexOf('req-mark') >= 0, '必选字段带红色星号');
-  ok(fh.indexOf('value="王建国"') >= 0 && fh.indexOf('value="13800000001"') >= 0, '预约人和电话默认填成当前登录的人');
+  ok(fh.indexOf('value="王建国"') >= 0, '预约人默认填成当前登录的人');
+  ok(fh.indexOf('value="13800000001"') < 0, '预约人电话不再自动带出');
   ok(fh.indexOf('预约人电话') >= 0, '表单里有「预约人电话」');
   ok(fh.indexOf('项目负责人') < 0, '页面上不解释「预约人」是谁');
   ok(fh.indexOf('可以改成业主或现场联系人') < 0, '不再提示「预约人」可以改成业主');
@@ -420,6 +421,25 @@ function click(listeners, act, attrs) {
   ok(th2.indexOf('创建人') < 0 && th2.indexOf('最后改动') < 0, '创建人 / 改动记录只有管理员可见');
   ok(th2.indexOf('data-act="edit-appt"') < 0, '维修人员不能编辑别人的单');
   ok(th2.indexOf('data-act="del-appt"') < 0, '维修人员不能删除别人的单');
+
+  console.log('\n[13] 维修人员：没有「新建预约」，换成「设置休息」');
+  click(asTech.listeners, 'nav', { nav: 'board' });
+  const bh = asTech.nodes['#page'].innerHTML;
+  ok(bh.indexOf('设置休息') >= 0, '排期看板上是「设置休息」');
+  ok(bh.indexOf('新建预约') < 0, '排期看板上没有「新建预约」');
+  ok(bh.indexOf('在这天新建') < 0, '当天卡片上也没有「在这天新建」');
+
+  click(asTech.listeners, 'nav', { nav: 'list' });
+  const listH = asTech.nodes['#page'].innerHTML;
+  ok(listH.indexOf('data-act="my-time-off"') >= 0, '预约单页上也能直接设置休息');
+  ok(listH.indexOf('data-act="new-appt"') < 0, '预约单页上没有新建预约的入口');
+
+  click(asTech.listeners, 'my-time-off', {});
+  const offH = asTech.nodes['#modal-root'].innerHTML;
+  ok(offH.indexOf('休息日里不会被排进预约单') >= 0, '排休提示改成了「休息日里不会被…」');
+  ok(offH.indexOf('id="off-part"') >= 0 && offH.indexOf('上午') >= 0 && offH.indexOf('下午') >= 0,
+    '排休可以按半天（上午 / 下午）设');
+  ok(offH.indexOf('张工') >= 0, '弹窗默认是给自己排休');
 
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);

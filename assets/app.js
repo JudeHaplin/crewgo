@@ -546,6 +546,12 @@
   // 涉及「系统稳定 / 数据安全」的事只有他能做
   const isOwnerTeam = () => !!state.profile && state.profile.team_role === 'owner';
 
+  /* 纯维修人员：只做单，不建单。页面上把「新建预约」换成「设置休息」 */
+  const isTechOnly = () => !!state.profile && state.profile.role === 'tech' && !isAdmin();
+  const newOrOffBtn = () => isTechOnly()
+    ? '<button class="btn btn-primary" data-act="my-time-off">设置休息</button>'
+    : '<button class="btn btn-primary" data-act="new-appt">＋ 新建预约</button>';
+
   /* ============================================================
      导航 / 外壳
      ============================================================ */
@@ -638,7 +644,9 @@
       (offByDate[o.off_date] = offByDate[o.off_date] || []).push(o);
     });
     const nameOf = o => (profileById(o.profile_id) || {}).name || '已离开的成员';
-    const offNames = ds => (offByDate[ds] || []).map(nameOf);
+    // 半天休（上午 / 下午）名字后面缀一下，日历格子里能看出是哪半天
+    const nameOfDay = o => nameOf(o) + (o.part && o.part !== '全天' ? '·' + o.part : '');
+    const offNames = ds => (offByDate[ds] || []).map(nameOfDay);
 
     const td = todayStr();
     let rows = '';
@@ -662,7 +670,7 @@
         if (evts.length > 3) inner += '<div class="cal-more">+' + (evts.length - 3) + ' 项</div>';
         const offList = offNames(ds);
         if (offList.length) {
-          inner += '<div class="cal-off" title="' + esc(offList.join('、')) + ' 休息，这天不排单">休 ' + esc(offList.join('、')) + '</div>';
+          inner += '<div class="cal-off" title="' + esc(offList.join('、')) + ' 休息，这段时间不排单">休 ' + esc(offList.join('、')) + '</div>';
         }
         rows += '<div class="' + cls.join(' ') + '" data-act="select-day" data-date="' + ds + '">' + inner + '</div>';
       }
@@ -678,7 +686,7 @@
           '<p class="page-desc">' + esc(state.profile.name) + ' · ' + esc(ROLE_LABEL[state.profile.role] || '') +
           ' · 共 ' + list.length + ' 条预约</p></div>' +
         '<div class="page-actions">' +
-          '<button class="btn btn-primary" data-act="new-appt">＋ 新建预约</button>' +
+          newOrOffBtn() +
         '</div>' +
       '</div>' +
 
@@ -723,11 +731,13 @@
       '<div class="card" style="margin-top:16px">' +
         '<div class="day-head">' +
           '<div class="day-title">' + dayLabel(b.day) + '<span>' + (relDay(b.day) ? relDay(b.day) + ' · ' : '') + dayList.length + ' 项</span></div>' +
-          '<button class="btn btn-sm" data-act="new-appt-day" data-date="' + b.day + '">在这天新建</button>' +
+          (isTechOnly()
+            ? '<button class="btn btn-sm" data-act="off-day" data-date="' + b.day + '">设置休息</button>'
+            : '<button class="btn btn-sm" data-act="new-appt-day" data-date="' + b.day + '">在这天新建</button>') +
         '</div>' +
-        (dayList.length ? dayList.map(apptRowHtml).join('') : emptyHtml('这天没有安排', '点右上角可以给这天加一条预约')) +
+        (dayList.length ? dayList.map(apptRowHtml).join('') : emptyHtml('这天没有安排', isTechOnly() ? '这天还没有派给你的活' : '点右上角可以给这天加一条预约')) +
         (offNames(b.day).length
-          ? '<div class="off-note">这天休息：' + esc(offNames(b.day).join('、')) + '（不会被排单）</div>' : '') +
+          ? '<div class="off-note">这天休息：' + esc(offNames(b.day).join('、')) + '（休息的时段不排单）</div>' : '') +
       '</div>' +
       soonOffHtml();
   }
@@ -739,7 +749,8 @@
     state.timeOff.forEach(o => {
       if (o.off_date < from || o.off_date > to) return;
       if (state.filters.tech && String(o.profile_id) !== String(state.filters.tech)) return;
-      (map[o.off_date] = map[o.off_date] || []).push((profileById(o.profile_id) || {}).name || '已离开的成员');
+      const nm = (profileById(o.profile_id) || {}).name || '已离开的成员';
+      (map[o.off_date] = map[o.off_date] || []).push(nm + (o.part && o.part !== '全天' ? '·' + o.part : ''));
     });
     const days = Object.keys(map).sort();
     if (!days.length) return '';
@@ -871,7 +882,7 @@
           '<button class="btn" data-act="copy-today">今日派单</button>' +
           '<button class="btn" data-act="copy-tomorrow">明日派单</button>' +
           '<button class="btn" data-act="export-csv">导出 CSV</button>' +
-          '<button class="btn btn-primary" data-act="new-appt">＋ 新建预约</button>' +
+          newOrOffBtn() +
         '</div>' +
       '</div>' +
       '<div class="filterbar">' +
@@ -920,7 +931,7 @@
     let html = '<div class="page-head"><div>' +
       '<h1 class="page-title">我的安排</h1>' +
       '<p class="page-desc">待办 ' + pending + ' 项 · 已完成 ' + done + ' 项 · 全部 ' + mine.length + ' 项</p></div>' +
-      '<div class="page-actions"><button class="btn btn-primary" data-act="new-appt">＋ 新建预约</button></div></div>';
+      '<div class="page-actions">' + newOrOffBtn() + '</div></div>';
 
     if (!mine.length) {
       html += '<div class="card">' + emptyHtml('还没有派给你的工作', '预约人给你排了活，这里就会出现') + '</div>';
@@ -1029,7 +1040,7 @@
           (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') +
           (offs.length ? ' <span class="tag tag-待确认">休 ' + offs.length + ' 天</span>' : '') + '</div>' +
           '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) +
-            (offs.length ? ' · 最近休息 ' + esc(offs[0].off_date.slice(5)) : '') + '</div></div>' +
+            (offs.length ? ' · 最近休息 ' + esc(offs[0].off_date.slice(5)) + (offs[0].part && offs[0].part !== '全天' ? ' ' + esc(offs[0].part) : '') : '') + '</div></div>' +
         ((isAdmin() || p.id === state.profile.id)
           ? '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">排休</button>' : '') +
         (isAdmin()
@@ -1043,9 +1054,9 @@
     const offRows = allOff.slice(0, 30).map(o => {
       const p = profileById(o.profile_id);
       return '<div class="list-row">' +
-        '<div class="grow"><div class="nm">' + esc(o.off_date) + ' · ' + esc(p ? p.name : o.name || '（已移除）') +
+        '<div class="grow"><div class="nm">' + esc(o.off_date) + (o.part && o.part !== '全天' ? ' ' + esc(o.part) : '') + ' · ' + esc(p ? p.name : o.name || '（已移除）') +
           (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div>' +
-          '<div class="sub">这天不排单</div></div>' +
+          '<div class="sub">' + (o.part && o.part !== '全天' ? '只休 ' + esc(o.part) + '，另一半天照常' : '这天不排单') + '</div></div>' +
         ((isAdmin() || o.profile_id === state.profile.id)
           ? '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' : '') +
       '</div>';
@@ -1557,12 +1568,13 @@
     const rows = list.slice(0, 12).map(o =>
       '<div class="list-row">' +
         '<div class="grow"><div class="nm">' + esc(o.off_date) + ' · ' + esc(dayLabel(o.off_date).split(' ')[1] || '') +
+          (o.part && o.part !== '全天' ? ' ' + esc(o.part) : '') +
           (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div>' +
-          '<div class="sub">这天不接单</div></div>' +
+          '<div class="sub">' + (o.part && o.part !== '全天' ? '这半天不接单，另一半照常' : '这天不接单') + '</div></div>' +
         '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' +
       '</div>').join('');
     return '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">我的休息日</h3>' +
-        '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">＋ 排休</button></div>' +
+        '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">＋ 设置休息</button></div>' +
       (rows || '<div class="card-body"><p class="hint" style="margin:0">还没排休。休息日里团队不会把你排进预约单。</p></div>') +
       '</div>';
   }
@@ -1694,9 +1706,10 @@
     // 项目和维修人员都是必选项：只留一个禁用的占位项，没选就提交不了（不再有「不指定 / 待分配」）
     const projPlaceholder = projectOpts.length ? '请选择项目' : '还没有项目，先去「设置 → 项目」建一个';
     const techPlaceholder = techOpts.length ? '请选择维修人员' : '还没有维修人员，先去「设置 → 人员」添加';
-    // 「预约人」= 项目负责人（给维修人员派活的那个人），新建时默认就是当前登录的人
+    // 「预约人」= 项目负责人（给维修人员派活的那个人），新建时默认就是当前登录的人；
+    // 电话不再自动带出，要用的人自己填
     const cName = a.contact_name || (a.id ? '' : (state.profile.name || ''));
-    const cPhone = a.contact_phone || (a.id ? '' : (state.profile.phone || ''));
+    const cPhone = a.contact_phone || '';
     return modalShell((a.id ? '编辑预约' : '新建预约'),
       '<form data-form="appt" data-id="' + (a.id || '') + '">' +
         '<div class="form-row">' +
@@ -1864,6 +1877,13 @@
     };
   }
 
+  /* 排休可能是半天：全天全挡，半天只挡同名时段 */
+  const offCovers = (part, slot) => {
+    const p = part && part !== '全天' ? part : '全天';
+    if (p === '全天') return true;
+    return String(slot || '上午') === '全天' || String(slot || '上午') === p;
+  };
+
   /* ---------- 冲突检测：同一人同一时段只能有一单，休息日不能派 ---------- */
   function apptConflictNow() {
     const f = $('form[data-form="appt"]');
@@ -1881,7 +1901,7 @@
       Number(a.id) !== excludeId &&
       (a.tech_id ? String(a.tech_id) === String(tech.id) : a.tech_name === tech.name) &&
       slotOverlap(a.time_slot, slot));
-    const off = state.timeOff.filter(o => o.profile_id === tech.id && o.off_date === date)[0] || null;
+    const off = state.timeOff.filter(o => o.profile_id === tech.id && o.off_date === date && offCovers(o.part, slot))[0] || null;
     return { tech: tech, date: date, slot: slot, conflicts: conflicts, off: off };
   }
 
@@ -1896,8 +1916,9 @@
     }
     if (r.off) {
       el.className = 'notice notice-warn';
-      el.innerHTML = '<b>' + esc(r.tech.name) + '</b> 在 ' + esc(dayLabel(r.date)) + ' 排了休息' +
-        (r.off.reason ? '（' + esc(r.off.reason) + '）' : '') + '，这天不能给他排单。';
+      el.innerHTML = '<b>' + esc(r.tech.name) + '</b> 在 ' + esc(dayLabel(r.date)) + ' ' + esc(r.slot) + ' 排了休息' +
+        (r.off.part && r.off.part !== '全天' ? '（只休' + esc(r.off.part) + '）' : '') +
+        (r.off.reason ? '（' + esc(r.off.reason) + '）' : '') + '，这个时段不能给他排单。';
       return;
     }
     el.className = 'notice notice-warn';
@@ -1974,7 +1995,8 @@
   /** 冲突确认文案：把已有单列清楚，让人知道自己在覆盖什么 */
   function conflictText(r) {
     if (r.off) {
-      return r.tech.name + ' 在 ' + dayLabel(r.date) + ' 排了休息' +
+      return r.tech.name + ' 在 ' + dayLabel(r.date) + ' ' + r.slot + ' 排了休息' +
+        (r.off.part && r.off.part !== '全天' ? '（只休' + r.off.part + '）' : '') +
         (r.off.reason ? '（' + r.off.reason + '）' : '') + '。\n\n确定要强制安排吗？';
     }
     return r.tech.name + ' 在 ' + dayLabel(r.date) + ' ' + r.slot + ' 已经有：\n' +
@@ -1990,17 +2012,14 @@
     if (!payload.visit_date) { toast('请选择上门日期'); return; }
     if (!payload.address && !payload.content) { toast('请填写地址或维修内容'); return; }
     // 预约人留空时兜底用当前登录的人，保证详情和通知里一定有联系人
-    if (!id) {
-      if (!payload.contact_name) payload.contact_name = state.profile.name || null;
-      if (!payload.contact_phone) payload.contact_phone = state.profile.phone || null;
-    }
+    if (!id && !payload.contact_name) payload.contact_name = state.profile.name || null;
 
     // 先在本地算一遍（数据都在手上，不用等网络）
     const local = apptConflictNow();
     let force = false;
     if (local && (local.off || local.conflicts.length)) {
       if (local.off && !isAdmin()) {
-        toast(local.tech.name + ' 在 ' + dayLabel(local.date) + ' 休息，不能排单', 4600);
+        toast(local.tech.name + ' 在 ' + dayLabel(local.date) + ' ' + local.slot + ' 休息，不能排单', 4600);
         return;
       }
       const ok = await confirmDialog(local.off ? '这天在休息' : '时间冲突', conflictText(local));
@@ -2540,6 +2559,9 @@
       case 'team-leave': leaveTeam(); break;
       case 'team-dissolve': dissolveTeam(); break;
       case 'time-off': openTimeOffModal(el.getAttribute('data-id')); break;
+      // 维修人员没有「新建预约」，这两个入口都落到自己的排休上
+      case 'my-time-off': openTimeOffModal(); break;
+      case 'off-day': openTimeOffModal(null, el.getAttribute('data-date')); break;
       case 'save-time-off': saveTimeOff(el.getAttribute('data-id')); break;
       case 'del-time-off': removeTimeOff(el.getAttribute('data-id')); break;
       case 'save-wechat': saveWechatCfg(); break;
@@ -2957,22 +2979,29 @@
   }
 
   /* ---------- 休息日 ---------- */
-  function openTimeOffModal(profileId) {
+  /* 排休：可以整天，也可以只排上午 / 下午（半天） */
+  function openTimeOffModal(profileId, day) {
     const p = profileById(profileId) || state.profile;
-    const t = todayStr();
+    const t = day || todayStr();
     const list = upcomingOff(p.id);
+    const partLabel = o => (o.part && o.part !== '全天' ? ' ' + o.part : '');
     const rows = list.map(o =>
       '<div class="list-row">' +
-        '<div class="grow"><div class="nm">' + esc(o.off_date) + (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div></div>' +
+        '<div class="grow"><div class="nm">' + esc(o.off_date) + esc(partLabel(o)) + (o.reason ? ' <span class="hint">' + esc(o.reason) + '</span>' : '') + '</div></div>' +
         '<button class="btn btn-sm btn-danger" data-act="del-time-off" data-id="' + o.id + '">取消</button>' +
       '</div>').join('');
-    openModal(modalShell('排休 · ' + p.name,
+    openModal(modalShell('设置休息 · ' + p.name,
       '<div class="form-row">' +
-        '<div class="field"><label>从</label><input class="input" type="date" id="off-from" value="' + t + '"></div>' +
-        '<div class="field"><label>到</label><input class="input" type="date" id="off-to" value="' + t + '"></div>' +
+        '<div class="field"><label>从</label><input class="input" type="date" id="off-from" value="' + esc(t) + '"></div>' +
+        '<div class="field"><label>到</label><input class="input" type="date" id="off-to" value="' + esc(t) + '"></div>' +
       '</div>' +
-      '<div class="field"><label>原因（选填）</label><input class="input" id="off-reason" maxlength="30" placeholder="如：调休 / 病假 / 年假"></div>' +
-      '<p class="hint" style="margin:-4px 0 12px">休息日里这个人不会被排进预约单，日历上会标出来。</p>' +
+      '<div class="form-row">' +
+        '<div class="field"><label>时段</label><select class="select" id="off-part">' +
+          ['全天', '上午', '下午'].map(x => '<option' + (x === '全天' ? ' selected' : '') + '>' + x + '</option>').join('') +
+        '</select></div>' +
+        '<div class="field"><label>原因（选填）</label><input class="input" id="off-reason" maxlength="30" placeholder="如：调休 / 病假 / 年假"></div>' +
+      '</div>' +
+      '<p class="hint" style="margin:-4px 0 12px">休息日里不会被排进预约单，日历上会标出来。选「上午 / 下午」只空出半天，另一半天照常可以排单。</p>' +
       (rows ? '<div class="group-title">已排的休息日<span class="count">' + list.length + ' 天</span></div>' + rows : ''),
       '<button class="btn" data-act="close-modal">关闭</button>' +
       '<button class="btn btn-primary" data-act="save-time-off" data-id="' + esc(p.id) + '">保存</button>'
@@ -2983,12 +3012,15 @@
     const from = ($('#off-from') || {}).value;
     const to = ($('#off-to') || {}).value || from;
     const reason = ($('#off-reason') || {}).value || '';
+    const part = ($('#off-part') || {}).value || '全天';
     if (!from) { toast('请选择开始日期'); return; }
     try {
-      const r = await teamPost('/api/schedule/time-off', { profile_id: profileId, from, to, reason });
+      const r = await teamPost('/api/schedule/time-off', { profile_id: profileId, from, to, reason, part });
       closeModal();
       await loadAll(); render();
-      if (r.added) toast('已排休 ' + r.added + ' 天' + (r.added < r.days ? '（其余已经排过）' : ''));
+      const tag = part === '全天' ? '' : '（' + part + '）';
+      if (r.added) toast('已排休 ' + r.added + ' 天' + tag + (r.added < r.days ? '（其余已经排过）' : ''));
+      else if (r.merged) toast('已改成全天休息（原本只排了半天）');
       else toast('这几天本来就排了休息');
     } catch (e) { toast('排休失败：' + e.message, 4200); }
   }

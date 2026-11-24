@@ -18,6 +18,19 @@ function slotOverlap(a, b) {
   return x === '全天' || y === '全天';
 }
 
+/* 排休可以是半天：全天 / 上午 / 下午 */
+const PARTS = ['全天', '上午', '下午'];
+const normPart = p => (PARTS.indexOf(String(p || '')) >= 0 ? String(p) : '全天');
+
+/** 这天这个时段算不算休息：排全天 → 都算；排半天 → 只有同名时段算 */
+function offCovers(part, slot) {
+  const p = normPart(part);
+  if (p === '全天') return true;
+  const s = String(slot || '上午');
+  if (s === '全天') return true;
+  return p === s;
+}
+
 function resolveTech(teamId, techId, techName) {
   if (techId) {
     const row = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(techId), teamId);
@@ -61,7 +74,9 @@ function check(teamId, opt) {
 
   const off = raw().prepare('SELECT * FROM time_off WHERE team_id = ? AND profile_id = ? AND off_date = ?')
     .get(teamId, tech.id, opt.date);
-  if (off) out.off = { id: off.id, off_date: off.off_date, reason: off.reason || '' };
+  if (off && offCovers(off.part, opt.slot)) {
+    out.off = { id: off.id, off_date: off.off_date, part: normPart(off.part), reason: off.reason || '' };
+  }
   return out;
 }
 
@@ -74,7 +89,7 @@ function listOff(teamId, from, to) {
   ).all(teamId, from || '0000-01-01', to || '9999-12-31');
   return rows.map(r => ({
     id: Number(r.id), profile_id: r.profile_id, name: r.name || '（已移除）',
-    color: r.color || '#8b93a3', off_date: r.off_date, reason: r.reason || ''
+    color: r.color || '#8b93a3', off_date: r.off_date, part: normPart(r.part), reason: r.reason || ''
   }));
 }
 
@@ -83,8 +98,8 @@ function offOnDate(teamId, date) {
   return listOff(teamId, date, date);
 }
 
-/** 批量排休：把区间里每一天都写进去（已存在就跳过） */
-function addOff(teamId, profileId, from, to, reason) {
+/** 批量排休：把区间里每一天都写进去（已存在就跳过；同一天先排上午再排下午会合并成全天） */
+function addOff(teamId, profileId, from, to, reason, part) {
   const start = String(from || '').slice(0, 10);
   const end = String(to || from || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) throw store.bad('开始日期格式不对');
@@ -95,16 +110,26 @@ function addOff(teamId, profileId, from, to, reason) {
   const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
   if (days > 180) throw store.bad('一次最多排 180 天');
 
-  const stmt = raw().prepare('INSERT OR IGNORE INTO time_off (team_id, profile_id, off_date, reason) VALUES (?,?,?,?)');
-  let added = 0;
+  const want = normPart(part);
+  const find = raw().prepare('SELECT id, part FROM time_off WHERE team_id = ? AND profile_id = ? AND off_date = ?');
+  const widen = raw().prepare("UPDATE time_off SET part = '全天' WHERE id = ?");
+  const stmt = raw().prepare('INSERT OR IGNORE INTO time_off (team_id, profile_id, off_date, part, reason) VALUES (?,?,?,?,?)');
+  let added = 0, merged = 0;
   const d = new Date(start + 'T00:00:00');
   for (let i = 0; i < days; i++) {
     const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-    const info = stmt.run(teamId, member.id, key, String(reason || '').slice(0, 60) || null);
-    if (info.changes) added++;
+    const hit = find.get(teamId, member.id, key);
+    if (!hit) {
+      const info = stmt.run(teamId, member.id, key, want, String(reason || '').slice(0, 60) || null);
+      if (info.changes) added++;
+    } else if (normPart(hit.part) !== want && normPart(hit.part) !== '全天') {
+      // 上午 + 下午 = 全天；已有半天又排全天也是全天
+      widen.run(hit.id);
+      merged++;
+    }
     d.setDate(d.getDate() + 1);
   }
-  return { added, days, name: member.name };
+  return { added, merged, days, part: want, name: member.name };
 }
 
-module.exports = { slotOverlap, check, listOff, offOnDate, addOff, resolveTech };
+module.exports = { slotOverlap, check, listOff, offOnDate, addOff, resolveTech, PARTS, normPart, offCovers };

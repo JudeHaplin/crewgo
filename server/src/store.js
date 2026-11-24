@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS time_off (
   team_id INTEGER,
   profile_id TEXT NOT NULL,
   off_date TEXT NOT NULL,
+  part TEXT NOT NULL DEFAULT '全天',
   reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
@@ -278,7 +279,7 @@ const TABLES = {
     num: ['id', 'team_id']
   },
   time_off: {
-    cols: ['id', 'team_id', 'profile_id', 'off_date', 'reason', 'created_at'],
+    cols: ['id', 'team_id', 'profile_id', 'off_date', 'part', 'reason', 'created_at'],
     bool: [],
     num: ['id', 'team_id']
   },
@@ -416,6 +417,10 @@ function migrate() {
   const acols = colsOf('appointments');
   for (const [name, type] of APPOINTMENT_MIGRATIONS) {
     if (!acols.includes(name)) db.exec('ALTER TABLE appointments ADD COLUMN ' + name + ' ' + type);
+  }
+  // 老 time_off 补「半天」列：全天 / 上午 / 下午（老数据一律当全天）
+  if (!colsOf('time_off').includes('part')) {
+    db.exec("ALTER TABLE time_off ADD COLUMN part TEXT NOT NULL DEFAULT '全天'");
   }
   // 同名唯一索引改成「团队内唯一」：不同团队可以有同名的人
   try { db.exec('DROP INDEX IF EXISTS profiles_name_key'); } catch (e) { /* ignore */ }

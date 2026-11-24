@@ -224,6 +224,28 @@ function zip(files) {
   const rmOff = await api('/api/schedule/time-off/remove', { profile_id: techId, from: '2026-12-05', to: '2026-12-06' }, admin);
   ok(rmOff.status === 200, '取消排休');
 
+  console.log('\n[6b] 半天休息：只有那个半天不能排单');
+  const half = await api('/api/schedule/time-off', { profile_id: techId, from: '2026-12-14', to: '2026-12-14', part: '上午' }, admin);
+  ok(half.status === 200 && half.json.added === 1 && half.json.part === '上午', '排了 12-14 上午休', half.json);
+  const amBlocked = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-14', time_slot: '上午', address: '8栋', content: '修门', tech_id: techId, tech_name: '张工' }
+  });
+  ok(amBlocked.status === 409 && amBlocked.json.off && amBlocked.json.off.part === '上午', '上午被半天休拦下', amBlocked.json);
+  const pmOk = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-14', time_slot: '下午', address: '8栋', content: '修门', tech_id: techId, tech_name: '张工' }
+  });
+  ok(pmOk.status === 200, '同一天下午照常能排');
+  const merge = await api('/api/schedule/time-off', { profile_id: techId, from: '2026-12-15', to: '2026-12-15', part: '上午' }, admin);
+  const merge2 = await api('/api/schedule/time-off', { profile_id: techId, from: '2026-12-15', to: '2026-12-15', part: '下午' }, admin);
+  ok(merge.status === 200 && merge2.status === 200 && merge2.json.merged === 1, '上午 + 下午 自动合并成全天', merge2.json);
+  const fullBlocked = await db(admin, {
+    table: 'appointments', action: 'insert',
+    values: { visit_date: '2026-12-15', time_slot: '下午', address: '9栋', content: '修窗', tech_id: techId, tech_name: '张工' }
+  });
+  ok(fullBlocked.status === 409 && fullBlocked.json.off.part === '全天', '合并成全天以后下午也拦', fullBlocked.json);
+
   console.log('\n[7] 手机号位数');
   const badPhone = await api('/api/auth/profile', { name: '张工', phone: '1380000' }, tech);
   ok(badPhone.status === 400, '7 位手机号被拒绝');

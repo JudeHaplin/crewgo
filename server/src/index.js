@@ -713,7 +713,7 @@ async function handleApi(req, res, pathname, url) {
     if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
     const target = store.isTeamAdmin(actor) || !body.profile_id ? (body.profile_id || actor.id) : actor.id;
-    const r = schedule.addOff(actor.teamId, target, body.from, body.to, body.reason);
+    const r = schedule.addOff(actor.teamId, target, body.from, body.to, body.reason, body.part);
     return send(res, 200, r);
   }
 
