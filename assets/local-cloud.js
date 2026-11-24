@@ -179,4 +179,6 @@
   window.WorkBuddyCloud = {
     createWorkBuddyCloud: function () { return cloud; }
   };
+  // 给 app.js 用：发信要走服务端（SMTP 授权码不能下发到浏览器）
+  window.__api = call;
 })();

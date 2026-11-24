@@ -83,6 +83,13 @@ CREATE TABLE IF NOT EXISTS settings (
   emailjs_public_key TEXT,
   digest_email TEXT,
   last_digest_date TEXT,
+  mail_mode TEXT NOT NULL DEFAULT 'smtp',
+  smtp_host TEXT,
+  smtp_port INTEGER DEFAULT 465,
+  smtp_user TEXT,
+  smtp_pass TEXT,
+  smtp_from TEXT,
+  smtp_name TEXT,
   updated_at TEXT
 );
 
@@ -121,9 +128,10 @@ const TABLES = {
   },
   settings: {
     cols: ['id', 'notify_enabled', 'pushplus_token', 'email_enabled', 'emailjs_service_id', 'emailjs_template_id',
-      'emailjs_public_key', 'digest_email', 'last_digest_date', 'updated_at'],
+      'emailjs_public_key', 'digest_email', 'last_digest_date', 'mail_mode', 'smtp_host', 'smtp_port', 'smtp_user',
+      'smtp_pass', 'smtp_from', 'smtp_name', 'updated_at'],
     bool: ['notify_enabled', 'email_enabled'],
-    num: ['id']
+    num: ['id', 'smtp_port']
   },
   email_logs: {
     cols: ['id', 'owner_id', 'kind', 'to_email', 'subject', 'status', 'detail', 'created_at'],
@@ -134,6 +142,24 @@ const TABLES = {
 
 let db = null;
 
+/* 老库迁移：settings 后续新增的列在这里补齐，老数据不动 */
+const SETTINGS_MIGRATIONS = [
+  ['mail_mode', "TEXT NOT NULL DEFAULT 'smtp'"],
+  ['smtp_host', 'TEXT'],
+  ['smtp_port', 'INTEGER DEFAULT 465'],
+  ['smtp_user', 'TEXT'],
+  ['smtp_pass', 'TEXT'],
+  ['smtp_from', 'TEXT'],
+  ['smtp_name', 'TEXT']
+];
+
+function migrate() {
+  const cols = db.prepare('PRAGMA table_info(settings)').all().map(c => c.name);
+  for (const [name, type] of SETTINGS_MIGRATIONS) {
+    if (!cols.includes(name)) db.exec('ALTER TABLE settings ADD COLUMN ' + name + ' ' + type);
+  }
+}
+
 function open() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   db = new DatabaseSync(DB_FILE);
@@ -141,6 +167,7 @@ function open() {
   db.exec('PRAGMA foreign_keys = ON');
   db.exec(SCHEMA);
   db.prepare('INSERT OR IGNORE INTO settings (id) VALUES (1)').run();
+  migrate();
   return db;
 }
 
@@ -155,11 +182,14 @@ function shape(table, row) {
   const out = {};
   for (const k of Object.keys(row)) {
     if (k === 'pin_hash') continue; // 任何情况下都不对外回传
+    if (table === 'settings' && k === 'smtp_pass') continue; // 授权码只进不出
     let v = row[k];
     if (bools.includes(k)) v = v === 1 || v === true;
     else if (nums.includes(k) && v !== null) v = Number(v);
     out[k] = v;
   }
+  // 前端只需要知道「授权码是否已保存」，不需要看到明文
+  if (table === 'settings') out.smtp_pass_set = !!row.smtp_pass;
   return out;
 }
 

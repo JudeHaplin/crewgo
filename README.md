@@ -25,7 +25,7 @@
 - **排期看板**：整月日历，每条预约按人员颜色着色，谁哪天去哪一眼看清。
 - **我的安排**：按 已过期 / 今天 / 明天 / 未来一周 分组，卡片上直接改状态。
 - **角色权限**：统筹能管项目、人员、通知设置；维修工只能看排期、改状态；删除限创建人或统筹。
-- **通知四通道**：站内通知、电脑弹窗、邮件（EmailJS）、微信（PushPlus），互不影响，配哪个用哪个。
+- **通知四通道**：站内通知、电脑弹窗、邮件（QQ/163 邮箱直连，也可用 EmailJS）、微信（PushPlus），互不影响，配哪个用哪个。
 - **真·定时任务**：每天定时扫单发提醒、发汇总——不依赖「有人打开页面」。
 - **一键派单文案**：生成排版好的文字，直接粘微信群，30 个人零学习。
 - **数据在本地**：SQLite 单文件，随时备份/拷走，不锁在任何平台上。
@@ -249,10 +249,16 @@ journalctl -u frps -n 50 --no-pager
 |---|---|---|
 | 站内通知 | 无 | 右上角铃铛，登录就能看到 |
 | 电脑弹窗 | 浏览器授权 | 页面开着时弹系统通知 |
-| 邮件 | EmailJS 的 Service ID / Template ID / Public Key | 免费 200 封/月，约等于每天 3-4 单；一单 2 封（派单 + 出发提醒） |
+| 邮件 | 邮箱地址 + 授权码（SMTP 直连） | QQ 邮箱约 500 封/天，免费、不经过第三方；也可切到 EmailJS（200 封/月） |
 | 微信 | 每人或全局的 PushPlus token | 免费 200 条/天，关注公众号即可，不用装 App |
 
-**邮件（10 分钟）**：`emailjs.com` 注册 → 添加你的邮箱服务（QQ/163 填授权码）→ 新建模板，收件人写 `{{to_email}}`、主题写 `{{subject}}`、正文 HTML 模式粘 `{{{message}}}` → 把三个值填进「设置 → 通知 → 邮件通知」→ 点「发一封测试」。
+**邮件（3 分钟，QQ 邮箱为例）**：
+
+1. `mail.qq.com` → 设置 → 账号 → 开启「SMTP 服务」→ 手机发一条验证短信 → 拿到 **16 位授权码**（只显示一次）
+2. 「设置 → 通知 → 邮件通知」选 **邮箱直连**：服务器 `smtp.qq.com`、端口 `465`、账号填完整邮箱、授权码粘进去
+3. 保存 → 点「发一封测试」
+
+> 服务端用自己写的极简 SMTP 客户端（`server/src/smtp.js`，零依赖）直连发信，授权码只存在服务器上、不会下发到浏览器。465 走 SSL，587 走 STARTTLS，163/腾讯企业邮同理。也可切回「EmailJS 中转」，填 Service ID / Template ID / Public Key 即可。
 
 **微信**：`pushplus.plus` 微信扫码 → 实名 → 复制 token。token 可以填在每个人档案里（只推给他），也可以填全局（群推）。
 
@@ -272,16 +278,19 @@ journalctl -u frps -n 50 --no-pager
 | 前端 | 原生 HTML/CSS/JS，无构建、无框架，单页 |
 | 后端 | Node 22 原生 `http` + 内置 `node:sqlite`，**零外部依赖** |
 | 认证 | 姓名 + PIN（scrypt 加盐哈希），HMAC 签名令牌，登录失败限速 |
-| 通知 | EmailJS（邮件）、PushPlus（微信），全部由服务端发出 |
+| 通知 | 自写 SMTP 客户端（邮件，零依赖）、PushPlus（微信），全部由服务端发出 |
 | 打包 | Docker 多架构镜像（amd64/arm64）+ 飞牛 fpk |
 
-接口很小，就五个：
+接口很小：
 
 ```
 POST /api/auth/setup    首次初始化管理员
 POST /api/auth/login    姓名 + PIN 登录
 GET  /api/auth/me       当前登录者
+POST /api/auth/pin      修改自己的 PIN
 POST /api/db            统一的数据读写（表名白名单 + 服务端权限校验）
+POST /api/mail/send     发一封邮件（SMTP 直连或 EmailJS 中转）
+POST /api/mail/digest   立即发今日汇总
 GET  /api/health        健康检查（容器 healthcheck 用）
 ```
 
@@ -291,7 +300,7 @@ GET  /api/health        健康检查（容器 healthcheck 用）
 DATA_DIR=./.data PORT=8080 node --no-warnings server/src/index.js
 ```
 
-跑测试（自动为每个测试文件起一个干净实例，共 52 项断言）：
+跑测试（自动为每个测试文件起一个干净实例，共 80 项断言）：
 
 ```bash
 node server/test/run.js              # 全部
@@ -325,7 +334,8 @@ git tag v1.0.2 && git push origin v1.0.2
 | fpk 包结构、`manifest` / `config` / `privilege` 字段、install/upgrade/uninstall 生命周期脚本 | 飞牛 fnOS 官方开发者文档（应用包规范与示例） | https://developer.fnnas.com/ |
 | `.fpk` 打包与签名 | 官方命令行工具 `fnpack` 1.3.3 | https://developer.fnnas.com/docs/cli/fnpack/ |
 | 本地数据库（零依赖） | Node.js 内置 `node:sqlite` 官方文档（Node ≥ 22.5） | https://nodejs.org/api/sqlite.html |
-| 邮件通道 | EmailJS 文档与模板变量约定（`{{to_email}}` / `{{subject}}` / `{{{message}}}`） | https://www.emailjs.com/docs/ |
+| 邮件通道（直连） | QQ 邮箱 / 163 邮箱官方 SMTP 参数与授权码机制（`smtp.qq.com:465`、`smtp.163.com:465`），MIME 与 RFC 2047 中文编码按 RFC 5322/2045/2047 实现 | https://service.mail.qq.com/ |
+| 邮件通道（中转，可选） | EmailJS 文档与模板变量约定（`{{to_email}}` / `{{subject}}` / `{{{message}}}`） | https://www.emailjs.com/docs/ |
 | 微信通道 | PushPlus 推送接口 | https://www.pushplus.plus/doc/ |
 | 多架构镜像、CI/CD | Docker 官方文档、GitHub Actions、`docker/build-push-action`、`docker/metadata-action` | https://docs.docker.com/ |
 | 图标生成 | Pillow（PIL） | https://python-pillow.org/ |

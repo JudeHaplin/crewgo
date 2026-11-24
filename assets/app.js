@@ -787,11 +787,66 @@
       '</p></div></div>';
   }
 
+  // 只是界面上的草稿：切换发送方式后立刻重绘，保存时才落库
+  let mailModeDraft = null;
+
   function emailCard(s) {
     s = s || {};
     const v = k => String(s[k] || '').trim();
-    const ready = !!(v('emailjs_service_id') && v('emailjs_template_id') && v('emailjs_public_key'));
+    const saved = String(s.mail_mode || (s.smtp_host ? 'smtp' : 'emailjs')).toLowerCase() === 'emailjs' ? 'emailjs' : 'smtp';
+    const mode = mailModeDraft || saved;
+    const ready = mode === 'smtp'
+      ? !!(v('smtp_host') && v('smtp_user') && s.smtp_pass_set === true)
+      : !!(v('emailjs_service_id') && v('emailjs_template_id') && v('emailjs_public_key'));
     const on = s.email_enabled === true;
+
+    const modeBtn = (k, label) =>
+      '<button class="btn btn-sm' + (mode === k ? ' btn-primary' : '') + '" data-act="mail-mode" data-mode="' + k + '">' + label + '</button>';
+
+    const smtpFields =
+      '<div class="field"><label>邮箱服务商（点一下自动填）</label>' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+          '<button class="btn btn-sm" data-act="mail-preset" data-host="smtp.qq.com" data-port="465">QQ 邮箱</button>' +
+          '<button class="btn btn-sm" data-act="mail-preset" data-host="smtp.163.com" data-port="465">163 邮箱</button>' +
+          '<button class="btn btn-sm" data-act="mail-preset" data-host="smtp.exmail.qq.com" data-port="465">腾讯企业邮</button>' +
+        '</div></div>' +
+      '<div class="field"><label>SMTP 服务器</label>' +
+        '<input class="input" data-field="smtp_host" value="' + esc(v('smtp_host') || 'smtp.qq.com') + '" placeholder="smtp.qq.com"></div>' +
+      '<div class="field"><label>端口（465 走 SSL，587 走 STARTTLS）</label>' +
+        '<input class="input" data-field="smtp_port" value="' + esc(v('smtp_port') || '465') + '" inputmode="numeric" placeholder="465"></div>' +
+      '<div class="field"><label>邮箱账号（完整地址）</label>' +
+        '<input class="input" type="email" data-field="smtp_user" value="' + esc(v('smtp_user')) + '" placeholder="你的QQ号@qq.com"></div>' +
+      '<div class="field"><label>授权码' + (s.smtp_pass_set === true ? '（已保存，留空则不修改）' : '') + '</label>' +
+        '<input class="input" type="password" data-field="smtp_pass" value="" autocomplete="new-password" placeholder="' +
+          (s.smtp_pass_set === true ? '••••••••  留空保持原来的' : '16 位授权码，不是登录密码') + '"></div>' +
+      '<div class="field"><label>发件人显示名</label>' +
+        '<input class="input" data-field="smtp_name" value="' + esc(v('smtp_name') || '速派') + '" placeholder="速派"></div>';
+
+    const emailjsFields =
+      '<div class="field"><label>Service ID</label><input class="input" data-field="emailjs_service_id" value="' + esc(v('emailjs_service_id')) + '" placeholder="service_xxxxxxx"></div>' +
+      '<div class="field"><label>Template ID</label><input class="input" data-field="emailjs_template_id" value="' + esc(v('emailjs_template_id')) + '" placeholder="template_xxxxxxx"></div>' +
+      '<div class="field"><label>Public Key</label><input class="input" data-field="emailjs_public_key" value="' + esc(v('emailjs_public_key')) + '" placeholder="公钥，可公开"></div>';
+
+    const help = mode === 'smtp'
+      ? '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">QQ 邮箱怎么填（约 3 分钟）</h3></div><div class="card-body">' +
+          '<p class="hint" style="margin:0 0 10px">' +
+            '① 浏览器打开 <b>mail.qq.com</b> 登录 → 顶部「设置」→「账号」；<br>' +
+            '② 往下找到「POP3/IMAP/SMTP/Exchange/CardDAV/CalDAV 服务」，点 <b>开启</b> SMTP 服务；<br>' +
+            '③ 按提示用手机发一条短信验证，页面会显示一串 <b>16 位授权码</b>（只显示一次，复制下来）；<br>' +
+            '④ 回到这里：账号填 <b>完整邮箱地址</b>，授权码粘贴到「授权码」，点保存 → 点「发一封测试」。' +
+          '</p>' +
+          '<p class="hint" style="margin:0">服务器 <b>smtp.qq.com</b>，端口 <b>465</b>。163 邮箱同理（smtp.163.com，也是授权码）。' +
+          'QQ 邮箱单日发信上限约 500 封，30 人的派单量远远够用，而且不花钱、不经过第三方。</p>' +
+        '</div></div>'
+      : '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">EmailJS 怎么配（约 10 分钟）</h3></div><div class="card-body">' +
+          '<p class="hint" style="margin:0 0 10px">' +
+            '① 打开 <b>emailjs.com</b> 注册 →「Email Services」添加邮箱（QQ/163 要填授权码）→ 记下 <b>Service ID</b>；<br>' +
+            '②「Email Templates」新建模板，主题填 <b>{{subject}}</b>，正文切 HTML 粘贴 <b>{{{message}}}</b>，收件人填 <b>{{to_email}}</b>；<br>' +
+            '③「Account → General」复制 <b>Public Key</b>，三个值填到上面保存。' +
+          '</p>' +
+          '<p class="hint" style="margin:0">免费额度 <b>200 封/月</b>，超了要付费。只是想用 QQ 邮箱发信的话，建议切到「邮箱直连」。</p>' +
+        '</div></div>';
+
     return '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">邮件通知</h3>' +
         '<span class="tag ' + (ready ? (on ? 'tag-已确认' : 'tag-待确认') : 'tag-已取消') + '">' +
           (ready ? (on ? '已启用' : '已配置 · 未启用') : '未配置') + '</span></div>' +
@@ -800,9 +855,10 @@
           '<div class="grow"><div class="nm">启用邮件</div><div class="sub">派单通知维修工、预约确认给业主、每日汇总</div></div>' +
           '<label class="switch"><input type="checkbox" data-act="toggle-email"' + (on ? ' checked' : '') + '><i></i></label>' +
         '</div>' +
-        '<div class="field"><label>Service ID</label><input class="input" data-field="emailjs_service_id" value="' + esc(v('emailjs_service_id')) + '" placeholder="service_xxxxxxx"></div>' +
-        '<div class="field"><label>Template ID</label><input class="input" data-field="emailjs_template_id" value="' + esc(v('emailjs_template_id')) + '" placeholder="template_xxxxxxx"></div>' +
-        '<div class="field"><label>Public Key</label><input class="input" data-field="emailjs_public_key" value="' + esc(v('emailjs_public_key')) + '" placeholder="公钥，可公开"></div>' +
+        '<div class="field"><label>发送方式</label>' +
+          '<div style="display:flex;gap:6px">' + modeBtn('smtp', '邮箱直连（推荐）') + modeBtn('emailjs', 'EmailJS 中转') + '</div>' +
+        '</div>' +
+        (mode === 'smtp' ? smtpFields : emailjsFields) +
         '<div class="field"><label>每日汇总收件邮箱</label><input class="input" type="email" data-field="digest_email" value="' + esc(v('digest_email')) + '" placeholder="每天一封派单汇总，可留空"></div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
           '<button class="btn btn-primary btn-sm" data-act="save-email">保存</button>' +
@@ -810,18 +866,7 @@
           '<button class="btn btn-sm" data-act="send-digest">发今日汇总</button>' +
           '<button class="btn btn-sm" data-act="mail-logs">发送记录</button>' +
         '</div>' +
-      '</div></div>' +
-      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">怎么配（一次性，约 10 分钟）</h3></div><div class="card-body">' +
-        '<p class="hint" style="margin:0 0 10px">' +
-          '① 打开 <b>emailjs.com</b> 用邮箱注册（免费，不用信用卡）→「Email Services」添加你的邮箱（QQ/163 要填授权码，不是登录密码）→ 记下 <b>Service ID</b>；<br>' +
-          '②「Email Templates」新建模板，三个变量必须出现在模板里：收件人填 <b>{{to_email}}</b>，主题填 <b>{{subject}}</b>，正文切到 HTML 模式粘贴 <b>{{{message}}}</b>；<br>' +
-          '③「Account → General」复制 <b>Public Key</b>；<br>' +
-          '④ 三个值填到上面保存，点「发一封测试」，收到就通了。' +
-        '</p>' +
-        '<p class="hint" style="margin:0">免费额度 <b>200 封/月</b>。一单大约 2 封（派单 + 出发提醒），所以免费版约等于<b>每天 3-4 单</b>；' +
-        '量再大就得 $9/月（2000 封），或者只开「每日汇总」这一种。' +
-        '</p>' +
-      '</div></div>';
+      '</div></div>' + help;
   }
 
   function notifyPane() {
@@ -1137,17 +1182,28 @@
 
   const mailCfg = () => {
     const s = state.settings || {};
+    const mode = String(s.mail_mode || (s.smtp_host ? 'smtp' : 'emailjs')).toLowerCase() === 'emailjs' ? 'emailjs' : 'smtp';
     return {
       enabled: s.email_enabled === true,
+      mode: mode,
+      host: String(s.smtp_host || '').trim(),
+      port: Number(s.smtp_port || 465),
+      user: String(s.smtp_user || '').trim(),
+      passSet: s.smtp_pass_set === true,
+      from: String(s.smtp_from || s.smtp_user || '').trim(),
+      name: String(s.smtp_name || '速派').trim(),
       service: String(s.emailjs_service_id || '').trim(),
       template: String(s.emailjs_template_id || '').trim(),
       key: String(s.emailjs_public_key || '').trim(),
       digestTo: String(s.digest_email || '').trim()
     };
   };
-  // 三个参数齐了才算配好；enabled 只是“要不要自动发”的开关
-  const mailReady = () => { const c = mailCfg(); return !!(c.service && c.template && c.key); };
-  const mailOn = () => { const c = mailCfg(); return c.enabled && !!(c.service && c.template && c.key); };
+  // SMTP 模式：服务器地址 + 邮箱 + 授权码齐了就算配好；EmailJS：三个参数
+  const mailReady = () => {
+    const c = mailCfg();
+    return c.mode === 'smtp' ? !!(c.host && c.user && c.passSet) : !!(c.service && c.template && c.key);
+  };
+  const mailOn = () => mailCfg().enabled && mailReady();
   const isEmail = v => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(v || '').trim());
 
   function mailHtml(opt) {
@@ -1215,9 +1271,29 @@
   // 返回 { ok, error }。所有发信都走这里，便于统一处理失败原因
   async function sendMail(opt) {
     const c = mailCfg();
-    if (!(c.service && c.template && c.key)) return { ok: false, error: '邮件服务未配置' };
+    if (!mailReady()) return { ok: false, error: '邮件服务未配置' };
     const to = String(opt.to || '').trim();
     if (!isEmail(to)) return { ok: false, error: '收件邮箱格式不对：' + (to || '（空）') };
+
+    // SMTP 直连：交给服务端发（授权码不下发到浏览器，且定时任务共用同一套配置）
+    if (c.mode === 'smtp') {
+      try {
+        const r = await window.__api('/api/mail/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            to: to,
+            toName: opt.toName || '',
+            subject: opt.subject || '速派通知',
+            html: opt.html || '',
+            text: opt.text || '',
+            kind: opt.kind || 'other'
+          })
+        });
+        return r && r.ok ? { ok: true } : { ok: false, error: (r && r.error) || '发送失败' };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) }; // 服务端已写 email_logs
+      }
+    }
 
     const payload = {
       service_id: c.service,
@@ -1514,6 +1590,14 @@
       case 'save-my-push': saveMyPush(); break;
       case 'test-push': testPush(); break;
       case 'save-email': saveEmail(); break;
+      case 'mail-mode': mailModeDraft = el.getAttribute('data-mode'); render(); break;
+      case 'mail-preset': {
+        const h = $('[data-field="smtp_host"]');
+        const p = $('[data-field="smtp_port"]');
+        if (h) h.value = el.getAttribute('data-host') || '';
+        if (p) p.value = el.getAttribute('data-port') || '465';
+        break;
+      }
       case 'test-mail': testMail(); break;
       case 'send-digest': sendDigestNow(el); break;
       case 'mail-logs': openMailLogs(); break;
@@ -1734,7 +1818,7 @@
   async function mailFromDetail(id, kind) {
     const a = state.appointments.filter(x => String(x.id) === String(id))[0];
     if (!a) return;
-    if (!mailReady()) { toast('邮件还没配置，去 设置 → 通知 里填三个参数'); return; }
+    if (!mailReady()) { toast('邮件还没配置，去 设置 → 通知 里填邮箱账号和授权码'); return; }
     toast('正在发送…');
     const ok = kind === 'confirm' ? await mailConfirm(a).catch(() => false) : await mailAssignment(a).catch(() => false);
     if (ok) { toast('已发出'); return; }
@@ -1954,21 +2038,47 @@
     const enabled = typeof forceEnabled === 'boolean'
       ? forceEnabled
       : !!($('[data-act="toggle-email"]') && $('[data-act="toggle-email"]').checked);
-    const payload = { email_enabled: enabled, updated_at: new Date().toISOString() };
-    ['emailjs_service_id', 'emailjs_template_id', 'emailjs_public_key', 'digest_email'].forEach(k => {
-      if (has(k)) payload[k] = get(k) || null;
-    });
+    const cur = state.settings || {};
+    const savedMode = String(cur.mail_mode || (cur.smtp_host ? 'smtp' : 'emailjs')).toLowerCase() === 'emailjs' ? 'emailjs' : 'smtp';
+    const mode = mailModeDraft || savedMode;
+    const payload = { email_enabled: enabled, mail_mode: mode, updated_at: new Date().toISOString() };
+
+    if (has('digest_email')) payload.digest_email = get('digest_email') || null;
     if (payload.digest_email && !isEmail(payload.digest_email)) { toast('汇总邮箱格式不对'); return; }
+
+    if (mode === 'smtp') {
+      payload.smtp_host = get('smtp_host') || null;
+      payload.smtp_port = Number(get('smtp_port') || 465) || 465;
+      payload.smtp_user = get('smtp_user') || null;
+      payload.smtp_from = get('smtp_user') || null;
+      payload.smtp_name = get('smtp_name') || '速派';
+      const pass = get('smtp_pass');
+      if (pass) payload.smtp_pass = pass; // 留空 = 保持原来的授权码
+      if (!payload.smtp_host) { toast('请填 SMTP 服务器，QQ 邮箱是 smtp.qq.com'); return; }
+      if (!payload.smtp_user || !isEmail(payload.smtp_user)) { toast('请填完整的邮箱地址'); return; }
+      if (!pass && cur.smtp_pass_set !== true) { toast('请填授权码（QQ 邮箱在「设置 → 账号」里生成，不是登录密码）'); return; }
+    } else {
+      ['emailjs_service_id', 'emailjs_template_id', 'emailjs_public_key'].forEach(k => {
+        if (has(k)) payload[k] = get(k) || null;
+      });
+    }
+
     const { data, error } = await db.from('settings').update(payload).eq('id', 1).select();
     if (error) { toast('保存失败：' + (error.message || '')); return; }
     if (!data || !data.length) { toast('没有权限，只有统筹管理员能改邮件设置'); return; }
     state.settings = data[0];
+    mailModeDraft = null;
     render();
     toast(enabled ? '邮件已保存并启用' : '邮件设置已保存（当前未启用）');
+    if (enabled && mailReady()) setTimeout(() => toast('建议点「发一封测试」确认能收到', 3200), 2200);
   }
 
   async function testMail() {
-    if (!mailReady()) { toast('请先填写并保存 Service ID / Template ID / Public Key'); return; }
+    if (!mailReady()) {
+      const c = mailCfg();
+      toast(c.mode === 'smtp' ? '先填 SMTP 服务器、邮箱账号和授权码，点保存' : '请先填写并保存 Service ID / Template ID / Public Key');
+      return;
+    }
     const c = mailCfg();
     const to = isEmail(state.profile.email) ? state.profile.email.trim()
       : (isEmail(c.digestTo) ? c.digestTo : '');
@@ -1986,12 +2096,12 @@
         rows: [
           { k: '发送时间', v: new Date().toLocaleString('zh-CN') },
           { k: '收件人', v: to },
-          { k: '发送方式', v: 'EmailJS（浏览器直连）' }
+          { k: '发送方式', v: c.mode === 'smtp' ? '邮箱直连（' + (c.from || c.user) + '）' : 'EmailJS 中转' }
         ],
         tip: '如果没在收件箱看到，翻一下垃圾邮件，并把发件地址加入白名单。'
       })
     });
-    toast(r.ok ? '已发出，去收件箱看看（可能进垃圾箱）' : '发送失败：' + r.error, 4600);
+    toast(r.ok ? '已发出，去收件箱看看（可能进垃圾箱）' : '发送失败：' + r.error, 5200);
   }
 
   async function sendDigestNow(btn) {

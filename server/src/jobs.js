@@ -6,6 +6,7 @@
  * 两个都幂等：靠 appointments.reminded_at 和 settings.last_digest_date 去重。
  */
 const { raw } = require('./store');
+const smtp = require('./smtp');
 
 const pushApi = 'https://www.pushplus.plus/send';
 const mailApi = 'https://api.emailjs.com/api/v1.0/email/send';
@@ -70,28 +71,45 @@ async function sendPush(token, title, content) {
 }
 
 async function sendMail(cfg, opt) {
-  if (!(cfg.service && cfg.template && cfg.key)) return { ok: false, error: '邮件未配置' };
+  if (!mailReady(cfg)) return { ok: false, error: '邮件未配置' };
   if (!isEmail(opt.to)) return { ok: false, error: '收件邮箱无效' };
   let status = 'sent', detail = '';
   try {
-    const res = await fetch(mailApi, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        service_id: cfg.service,
-        template_id: cfg.template,
-        user_id: cfg.key,
-        template_params: {
-          to_email: opt.to,
-          to_name: opt.toName || '',
-          subject: opt.subject || '速派通知',
-          message: opt.html || esc(opt.text || ''),
-          plain_text: opt.text || ''
-        }
-      })
-    });
-    const txt = await res.text().catch(() => '');
-    if (!res.ok) { status = 'failed'; detail = (txt || ('HTTP ' + res.status)).slice(0, 400); }
+    if (cfg.mode === 'smtp') {
+      const r = await smtp.send({
+        host: cfg.host,
+        port: cfg.port,
+        user: cfg.user,
+        pass: cfg.pass,
+        from: cfg.from || cfg.user,
+        fromName: cfg.name,
+        to: opt.to,
+        toName: opt.toName || '',
+        subject: opt.subject || '速派通知',
+        html: opt.html || '',
+        text: opt.text || ''
+      });
+      if (!r.ok) { status = 'failed'; detail = r.error || '发送失败'; }
+    } else {
+      const res = await fetch(mailApi, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service_id: cfg.service,
+          template_id: cfg.template,
+          user_id: cfg.key,
+          template_params: {
+            to_email: opt.to,
+            to_name: opt.toName || '',
+            subject: opt.subject || '速派通知',
+            message: opt.html || esc(opt.text || ''),
+            plain_text: opt.text || ''
+          }
+        })
+      });
+      const txt = await res.text().catch(() => '');
+      if (!res.ok) { status = 'failed'; detail = (txt || ('HTTP ' + res.status)).slice(0, 400); }
+    }
   } catch (e) {
     status = 'failed';
     detail = String((e && e.message) || e).slice(0, 400);
@@ -103,11 +121,32 @@ async function sendMail(cfg, opt) {
   return status === 'sent' ? { ok: true } : { ok: false, error: detail };
 }
 
-const mailCfg = s => ({
-  service: (s.emailjs_service_id || '').trim(),
-  template: (s.emailjs_template_id || '').trim(),
-  key: (s.emailjs_public_key || '').trim()
-});
+/**
+ * 邮件配置。两种模式：
+ *   smtp    —— 直连邮箱服务商（QQ/163/企业邮箱），填邮箱 + 授权码即可，无第三方
+ *   emailjs —— 第三方中转（老的配置方式，保留兼容）
+ * 没显式选模式时：填了 smtp_host 就走 smtp，否则走 emailjs。
+ */
+const mailCfg = s => {
+  s = s || {};
+  const mode = String(s.mail_mode || (s.smtp_host ? 'smtp' : 'emailjs')).toLowerCase();
+  return {
+    mode: mode === 'emailjs' ? 'emailjs' : 'smtp',
+    host: String(s.smtp_host || '').trim(),
+    port: Number(s.smtp_port || 465),
+    user: String(s.smtp_user || '').trim(),
+    pass: String(s.smtp_pass || ''),
+    from: String(s.smtp_from || s.smtp_user || '').trim(),
+    name: String(s.smtp_name || '速派').trim() || '速派',
+    service: String(s.emailjs_service_id || '').trim(),
+    template: String(s.emailjs_template_id || '').trim(),
+    key: String(s.emailjs_public_key || '').trim()
+  };
+};
+
+const mailReady = c => (c && c.mode === 'smtp'
+  ? !!(c.host && c.user && c.pass)
+  : !!(c && c.service && c.template && c.key));
 
 /* ---------- 出发提醒 ---------- */
 async function runReminders() {
@@ -123,7 +162,7 @@ async function runReminders() {
   if (!due.length) return 0;
 
   const cfg = mailCfg(s);
-  const emailOn = s.email_enabled === 1 && cfg.service && cfg.template && cfg.key;
+  const emailOn = s.email_enabled === 1 && mailReady(cfg);
   let sent = 0;
 
   for (const a of due) {
@@ -175,7 +214,7 @@ async function runDigest() {
   const s = settings();
   if (s.email_enabled !== 1) return false;
   const cfg = mailCfg(s);
-  if (!(cfg.service && cfg.template && cfg.key) || !isEmail(s.digest_email)) return false;
+  if (!mailReady(cfg) || !isEmail(s.digest_email)) return false;
 
   const today = ymd(new Date());
   if (s.last_digest_date === today) return false;
@@ -236,4 +275,4 @@ function start(log) {
   if (log) log('定时任务已启动（汇总时间 ' + digestHour + ':00，每 5 分钟检查一次）');
 }
 
-module.exports = { start, runReminders, runDigest, sendPush, sendMail, mailHtml };
+module.exports = { start, runReminders, runDigest, sendPush, sendMail, mailHtml, mailCfg, mailReady };

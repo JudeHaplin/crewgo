@@ -183,6 +183,38 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, result);
   }
 
+  /* 发信统一走服务端：SMTP 直连时授权码不会到浏览器，也能被定时任务复用 */
+  if (pathname === '/api/mail/send' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '登录已过期，请重新登录');
+    const body = await readBody(req);
+    const row = store.raw().prepare('SELECT * FROM settings WHERE id = 1').get() || {};
+    const cfg = jobs.mailCfg(row);
+    if (!jobs.mailReady(cfg)) {
+      return fail(res, 400, cfg.mode === 'smtp' ? '邮件还没配好：需要邮箱地址 + 授权码' : 'EmailJS 三个参数没填全');
+    }
+    const to = String(body.to || '').trim();
+    if (!to) return fail(res, 400, '收件邮箱不能为空');
+    const r = await jobs.sendMail(cfg, {
+      to,
+      toName: body.toName || '',
+      subject: body.subject || '速派通知',
+      html: body.html || '',
+      text: body.text || '',
+      kind: body.kind || 'other',
+      owner: actor.id
+    });
+    if (!r.ok) return fail(res, 502, r.error || '发送失败');
+    return send(res, 200, { ok: true, mode: cfg.mode });
+  }
+
+  if (pathname === '/api/mail/digest' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor || actor.role !== 'admin') return fail(res, 403, '只有统筹能发汇总');
+    const ok = await jobs.runDigest();
+    return send(res, 200, { ok: !!ok });
+  }
+
   if (pathname === '/api/jobs/run' && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor || actor.role !== 'admin') return fail(res, 403, '只有统筹能手动触发');
