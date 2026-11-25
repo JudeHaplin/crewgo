@@ -1313,6 +1313,114 @@
   }
 
   /* ============================================================
+     自动备份卡片（读态锁定，点「更改」才可编辑）
+     ============================================================ */
+  let autoEdit = false;   // 是否处于编辑态
+  let autoFlash = '';     // 保存/切换后的成功提示，下一次操作即清掉
+
+  function autoHourOf(st) {
+    const h = Number(st && st.backup_hour !== null && st.backup_hour !== undefined ? st.backup_hour : 3);
+    return Number.isFinite(h) ? Math.max(0, Math.min(23, Math.round(h))) : 3;
+  }
+  function hhmm(h) { return (h < 10 ? '0' + h : String(h)) + ':00'; }
+
+  function autoBackupCardHtml() {
+    const st = state.settings || {};
+    const on = Number(st.auto_backup) === 1;
+    const hour = autoHourOf(st);
+    const email = String(st.backup_email || '').trim();
+    const full = Number(st.backup_full) === 1;
+    // 没配过邮箱就一直停在表单，避免「开了开关却发不出去」
+    const form = autoEdit || !email;
+
+    const head =
+      '<div class="card-head"><h3 class="card-title">自动备份到邮箱</h3>' +
+        '<div style="display:flex;align-items:center;gap:10px">' +
+          '<span class="hint" style="font-size:12px;margin:0">' + (on ? '已开启' : '已关闭') + '</span>' +
+          '<label class="switch" title="' + (form ? '先保存或取消，再切换开关' : (on ? '关闭自动备份' : '开启自动备份')) + '">' +
+            '<input type="checkbox" data-act="toggle-auto-backup"' + (on ? ' checked' : '') + (form ? ' disabled' : '') + '>' +
+            '<i></i></label>' +
+        '</div>' +
+      '</div>';
+
+    const intro =
+      '<p class="hint" style="margin:0 0 12px">每天定时把本团队的数据打包成附件，发到你指定的邮箱。' +
+        '硬盘坏了、误删了、换机器，都能从邮箱里把备份取回来。' +
+        '发信要用 <b>「设置 → 通知 → 邮箱服务」里的 SMTP 账号</b>（EmailJS 不支持附件）。</p>';
+
+    const flash = autoFlash
+      ? '<div class="notice notice-ok" style="margin:0 0 12px">' + esc(autoFlash) + '</div>'
+      : '';
+
+    const hourOpts = [];
+    for (let h = 0; h < 24; h++) {
+      hourOpts.push('<option value="' + h + '"' + (h === hour ? ' selected' : '') + '>' + hhmm(h) + '</option>');
+    }
+
+    const formHtml =
+      '<div class="field"><label>收件邮箱（多个用逗号隔开，最多 3 个）</label>' +
+        '<input class="input" id="auto-backup-email" value="' + esc(email) + '" placeholder="例如 123456@qq.com" autocomplete="off"></div>' +
+      '<div class="form-row">' +
+        '<div class="field"><label>每天几点发</label><select class="select" id="auto-backup-hour">' + hourOpts.join('') + '</select></div>' +
+        '<div class="field"><label>备份内容</label>' +
+          '<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px">' +
+            '<input type="checkbox" id="auto-backup-full"' + (full ? ' checked' : '') + '> 同时附上整库 .db</label>' +
+          '<div class="hint" style="margin-top:4px">整库含所有团队与密钥，只给统筹开</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:2px">' +
+        '<button class="btn btn-primary btn-sm" data-act="save-auto-backup">保存</button>' +
+        (email ? '<button class="btn btn-sm" data-act="cancel-auto-backup">取消</button>' : '') +
+      '</div>';
+
+    const summaryHtml =
+      '<div style="display:flex;align-items:center;gap:8px;margin:2px 0 2px">' +
+        '<div class="grow" style="font-size:13px;font-weight:600">当前设置</div>' +
+        '<button class="btn btn-sm" data-act="edit-auto-backup">更改</button>' +
+      '</div>' +
+      '<div>' +
+        '<div class="kv"><span>收件邮箱</span><b style="text-align:right;overflow-wrap:anywhere;max-width:62%">' + esc(email) + '</b></div>' +
+        '<div class="kv"><span>发送时间</span><b>每天 ' + hhmm(hour) + '</b></div>' +
+        '<div class="kv"><span>备份内容</span><b>团队 JSON' + (full ? ' + 整库 .db' : '') + '</b></div>' +
+      '</div>';
+
+    const last = st.last_backup_at
+      ? '<div class="notice' + (/失败/.test(String(st.last_backup_note || '')) ? ' notice-warn' : '') + '" style="margin:12px 0 0">' +
+          '上次备份：' + esc(st.last_backup_at) + '　' + esc(st.last_backup_note || '') + '</div>'
+      : '';
+
+    // 读态才给「立即备份一次」，锁着的时候人看得清「现在的配置就是这样」
+    const runBtn = form
+      ? ''
+      : '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">' +
+          '<button class="btn btn-sm" data-act="run-auto-backup">立即备份一次</button>' +
+        '</div>';
+
+    return '<div class="card" id="auto-backup-card" style="margin-top:14px">' + head + '<div class="card-body">' +
+        intro + flash + (form ? formHtml : summaryHtml) + last + runBtn +
+        '<p class="hint" style="margin:12px 0 0">附件上限 15MB。JSON 备份不含邮箱授权码 / 微信密钥 / PushPlus token（导入后重填一次即可）；' +
+          '整库 .db 是完整快照，请妥善保管。</p>' +
+      '</div></div>';
+  }
+
+  /** 只换这张卡片，别整页重绘（否则会滚回顶部、闪一下） */
+  function refreshAutoBackupCard() {
+    const page = $('#page');
+    const old = $('#auto-backup-card');
+    if (!old) { render(); return; }
+    const y = page ? page.scrollTop : 0;
+    const box = document.createElement('div');
+    box.innerHTML = autoBackupCardHtml();
+    const next = box.firstElementChild;
+    if (next && typeof old.replaceWith === 'function') {
+      old.replaceWith(next);
+      if (page) page.scrollTop = y;
+    } else {
+      render();
+    }
+  }
+
+  /* ============================================================
      设置：数据备份
      ============================================================ */
   function dataPane() {
@@ -1340,43 +1448,7 @@
         '</div></div>';
     }
 
-    const st = state.settings || {};
-    const autoOn = !!st.auto_backup;
-    const autoHour = Number(st.backup_hour === null || st.backup_hour === undefined ? 3 : st.backup_hour);
-    const hourOpts = [];
-    for (let h = 0; h < 24; h++) {
-      hourOpts.push('<option value="' + h + '"' + (h === autoHour ? ' selected' : '') + '>' + (h < 10 ? '0' + h : h) + ':00</option>');
-    }
-    const autoCard =
-      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">自动备份到邮箱</h3>' +
-        '<span class="tag ' + (autoOn ? 'tag-已确认' : 'tag-已取消') + '">' + (autoOn ? '已开启' : '未开启') + '</span></div>' +
-      '<div class="card-body">' +
-        '<p class="hint" style="margin:0 0 14px">每天定时把本团队的数据打包成附件，发到你指定的邮箱。' +
-          '硬盘坏了、误删了、换机器，都能从邮箱里把备份取回来。' +
-          '发信要用 <b>「设置 → 通知 → 邮箱服务」里的 SMTP 账号</b>（EmailJS 不支持附件）。</p>' +
-        '<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;margin-bottom:12px">' +
-          '<input type="checkbox" id="auto-backup-on"' + (autoOn ? ' checked' : '') + '> 每天自动备份一次</label>' +
-        '<div class="field"><label>发到这个邮箱（多个用逗号隔开，最多 3 个）</label>' +
-          '<input class="input" id="auto-backup-email" value="' + esc(st.backup_email || '') + '" placeholder="例如 123456@qq.com"></div>' +
-        '<div class="form-row">' +
-          '<div class="field"><label>每天几点发</label><select class="select" id="auto-backup-hour">' + hourOpts.join('') + '</select></div>' +
-          '<div class="field"><label>备份内容</label>' +
-            '<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px">' +
-              '<input type="checkbox" id="auto-backup-full"' + (st.backup_full ? ' checked' : '') + '> 同时附上整库 .db</label>' +
-            '<div class="hint" style="margin-top:4px">整库含所有团队与密钥，只给统筹开</div>' +
-          '</div>' +
-        '</div>' +
-        (st.last_backup_at
-          ? '<div class="notice' + (/失败/.test(String(st.last_backup_note || '')) ? ' notice-warn' : '') + '" style="margin:4px 0 0">' +
-              '上次备份：' + esc(st.last_backup_at) + '　' + esc(st.last_backup_note || '') + '</div>'
-          : '') +
-        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">' +
-          '<button class="btn btn-primary btn-sm" data-act="save-auto-backup">保存</button>' +
-          '<button class="btn btn-sm" data-act="run-auto-backup">立即备份一次</button>' +
-        '</div>' +
-        '<p class="hint" style="margin:12px 0 0">附件上限 15MB。JSON 备份不含邮箱授权码 / 微信密钥 / PushPlus token（导入后重填一次即可）；' +
-          '整库 .db 是完整快照，请妥善保管。</p>' +
-      '</div></div>';
+    const autoCard = autoBackupCardHtml();
 
     return '<div class="card"><div class="card-head"><h3 class="card-title">导出备份</h3></div><div class="card-body">' +
         stats +
@@ -2609,6 +2681,15 @@
       case 'export-db': downloadBackup('db'); break;
       case 'save-auto-backup': saveAutoBackup(); break;
       case 'run-auto-backup': runAutoBackup(); break;
+      case 'toggle-auto-backup': toggleAutoBackup(el); break;
+      case 'edit-auto-backup': {
+        autoEdit = true; autoFlash = '';
+        refreshAutoBackupCard();
+        const box = $('#auto-backup-email');
+        if (box && box.focus) box.focus();
+        break;
+      }
+      case 'cancel-auto-backup': autoEdit = false; autoFlash = ''; refreshAutoBackupCard(); break;
       case 'import-preview': previewImport(); break;
       case 'import-commit': commitImport(el.getAttribute('data-file')); break;
       case 'add-project': openProjectModal(null); break;
@@ -3144,9 +3225,10 @@
 
   /* 自动备份：每天定时把团队备份发到指定邮箱 */
   function autoBackupForm() {
+    const emailEl = $('#auto-backup-email');
+    if (!emailEl) return null;   // 读态没有表单
     return {
-      on: !!($('#auto-backup-on') || {}).checked,
-      email: String(($('#auto-backup-email') || {}).value || '').trim(),
+      email: String(emailEl.value || '').trim(),
       hour: Number(($('#auto-backup-hour') || {}).value || 3),
       full: !!($('#auto-backup-full') || {}).checked
     };
@@ -3154,34 +3236,88 @@
 
   async function saveAutoBackup() {
     const f = autoBackupForm();
-    if (f.on && !f.email) { toast('请先填一个收件邮箱'); return; }
+    if (!f) { autoEdit = true; refreshAutoBackupCard(); return; }
+    if (!f.email) { toast('请先填一个收件邮箱'); return; }
+
+    const st = state.settings || {};
+    // 第一次填邮箱（之前是空的）就顺手打开，省得用户再点一次开关
+    const firstTime = !String(st.backup_email || '').trim();
+    const enabled = firstTime ? true : Number(st.auto_backup) === 1;
+
+    const btn = $('[data-act="save-auto-backup"]');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    try {
+      const r = await window.__api('/api/backup/auto', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: enabled, email: f.email, hour: f.hour, full: f.full })
+      });
+      await loadAll();
+      autoEdit = false;
+      autoFlash = enabled
+        ? '已保存并生效：每天 ' + hhmm(Number(r.hour)) + ' 自动备份到 ' + String(r.email || f.email).split(',').join('、')
+        : '已保存。自动备份现在是关闭的，打开右上角开关就会按时发。';
+      refreshAutoBackupCard();
+      toast(enabled ? '已保存并开启' : '已保存', 3200);
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+      toast('保存失败：' + e.message, 4600);
+    }
+  }
+
+  async function toggleAutoBackup(input) {
+    const st = state.settings || {};
+    const email = String(st.backup_email || '').trim();
+    const want = !!(input && input.checked);
+
+    // 还没配邮箱：别让开关空转，直接把人带到表单里
+    if (!email) {
+      if (input) input.checked = false;
+      autoEdit = true; autoFlash = '';
+      refreshAutoBackupCard();
+      toast('先填一个收件邮箱，再打开自动备份');
+      return;
+    }
+
+    if (input) input.disabled = true;
     try {
       await window.__api('/api/backup/auto', {
         method: 'POST',
-        body: JSON.stringify({ enabled: f.on, email: f.email, hour: f.hour, full: f.full })
+        body: JSON.stringify({ enabled: want, email: email, hour: autoHourOf(st), full: Number(st.backup_full) === 1 })
       });
-      await loadAll(); render();
-      toast(f.on ? '已开启：每天 ' + (f.hour < 10 ? '0' + f.hour : f.hour) + ':00 备份到 ' + f.email : '已关闭自动备份');
-    } catch (e) { toast('保存失败：' + e.message, 4600); }
+      await loadAll();
+      autoFlash = want
+        ? '已开启：每天 ' + hhmm(autoHourOf(state.settings || {})) + ' 自动备份到 ' + email.split(',').join('、')
+        : '已关闭自动备份。邮箱和时间都留着，随时可以再打开。';
+      refreshAutoBackupCard();
+      toast(want ? '自动备份已开启' : '自动备份已关闭');
+    } catch (e) {
+      if (input) { input.checked = !want; input.disabled = false; }
+      toast('切换失败：' + e.message, 4600);
+    }
   }
 
   async function runAutoBackup() {
-    const f = autoBackupForm();
-    if (!f.email) { toast('先填收件邮箱再发'); return; }
-    // 先把当前表单存一次，免得「填了邮箱但没点保存」时发不出去
-    try {
-      await window.__api('/api/backup/auto', {
-        method: 'POST',
-        body: JSON.stringify({ enabled: f.on, email: f.email, hour: f.hour, full: f.full })
-      });
-    } catch (e) { /* 配置没存上就让下一步报具体原因 */ }
+    const st = state.settings || {};
+    const email = String(st.backup_email || '').trim();
+    if (!email) {
+      autoEdit = true; autoFlash = '';
+      refreshAutoBackupCard();
+      toast('先填收件邮箱再发');
+      return;
+    }
+    const btn = $('[data-act="run-auto-backup"]');
+    if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
     toast('正在打包并发送，稍等…', 3000);
     try {
       const r = await window.__api('/api/backup/auto/run', { method: 'POST', body: '{}' });
-      await loadAll(); render();
+      await loadAll();
+      autoFlash = '已发送：' + (r.note || '备份邮件已发出');
+      refreshAutoBackupCard();
       toast(r.note || '已发送', 6000);
     } catch (e) {
-      await loadAll(); render();
+      await loadAll();
+      refreshAutoBackupCard();
+      if (btn) { btn.disabled = false; btn.textContent = '立即备份一次'; }
       toast('备份失败：' + e.message, 8000);
     }
   }

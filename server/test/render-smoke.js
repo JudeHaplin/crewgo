@@ -259,12 +259,21 @@ function click(listeners, act, attrs) {
     }
     if (path === '/api/team/requests') return { data: [{ id: 3, profile_id: 'p_9', name: '新同事', phone: '13800000010', message: '我是水电' }] };
     if (path === '/api/settings/wechat') return { wx_mp_appid: 'wxaa', wx_qr_appid: 'wxbb', wx_mp_secret_set: true, wx_qr_secret_set: false, enabled: { mp: true, qr: true }, callback: 'http://x/api/auth/wechat/callback' };
+    if (path === '/api/backup/auto') {
+      return { ok: true, enabled: !!(body && body.enabled), email: (body && body.email) || '', hour: (body && body.hour) || 3, full: !!(body && body.full) };
+    }
     if (path === '/api/db') {
       const table = body && body.table;
       if (table === 'profiles') return { data: [meRow, techRow] };
       if (table === 'projects') return { data: [{ id: 1, team_id: 1, name: '阳光小区', address: '3栋', color: '#2b6ef6', active: 1 }] };
       if (table === 'appointments') return { data: [apptRow] };
-      if (table === 'settings') return { id: 1, team_id: 1, notify_enabled: 1, email_enabled: 0, smtp_pass_set: false };
+      if (table === 'settings') return {
+        data: [{
+          id: 1, team_id: 1, notify_enabled: 1, email_enabled: 0, smtp_pass_set: false,
+          auto_backup: 1, backup_email: 'ops@example.com', backup_hour: 18, backup_full: 0,
+          last_backup_at: '2026-11-24 18:00', last_backup_note: '已发送（JSON 128KB）'
+        }]
+      };
       if (table === 'notifications') return { data: [] };
       if (table === 'time_off') return { data: [{ id: 1, team_id: 1, profile_id: 'p_9', off_date: '2026-11-25', part: '全天', reason: '调休' }] };
       return { data: [] };
@@ -454,18 +463,50 @@ function click(listeners, act, attrs) {
   ok(rngH.indexOf('id="off-date"') < 0, '管理员的弹窗里没有单日日期框');
   ok(rngH.indexOf('休息日里不会被排进预约单') >= 0, '提示文案一致');
 
-  console.log('\n[15] 设置 → 数据备份：自动备份到邮箱');
+  console.log('\n[15] 设置 → 数据备份：自动备份到邮箱（读态锁定 / 更改 / 保存反馈）');
   click(full.listeners, 'nav', { nav: 'settings' });
   click(full.listeners, 'settings-tab', { tab: 'data' });
   const dataH = full.nodes['#page'].innerHTML;
   ok(dataH.indexOf('自动备份到邮箱') >= 0, '数据备份页有「自动备份到邮箱」卡片');
-  ok(dataH.indexOf('id="auto-backup-email"') >= 0, '有收件邮箱输入框');
-  ok(dataH.indexOf('id="auto-backup-hour"') >= 0, '有每天几点发的选择');
-  ok(dataH.indexOf('id="auto-backup-full"') >= 0, '有「同时附上整库 .db」选项');
-  ok(dataH.indexOf('data-act="save-auto-backup"') >= 0 && dataH.indexOf('data-act="run-auto-backup"') >= 0,
-    '有「保存」和「立即备份一次」按钮');
-  const hourSel = (dataH.match(/<select class="select" id="auto-backup-hour">[\s\S]*?<\/select>/) || [''])[0];
+  ok(dataH.indexOf('已开启') >= 0, '卡片头上写着「已开启」');
+  ok(dataH.indexOf('data-act="toggle-auto-backup"') >= 0, '有关闭 / 开启这项功能的开关');
+  ok(dataH.indexOf('ops@example.com') >= 0 && dataH.indexOf('每天 18:00') >= 0,
+    '读态直接显示当前收件邮箱和发送时间');
+  ok(dataH.indexOf('id="auto-backup-email"') < 0, '没点「更改」之前邮箱是锁着的（不是输入框）');
+  ok(dataH.indexOf('data-act="edit-auto-backup"') >= 0, '有「更改」按钮');
+  ok(dataH.indexOf('data-act="run-auto-backup"') >= 0, '读态下有「立即备份一次」');
+  ok(dataH.indexOf('上次备份：2026-11-24 18:00') >= 0, '显示上次备份时间与结果');
+  ok(dataH.indexOf('团队 JSON') >= 0, '摘要里写清了备份内容');
+
+  click(full.listeners, 'edit-auto-backup');
+  const editH = full.nodes['#page'].innerHTML;
+  ok(editH.indexOf('id="auto-backup-email"') >= 0 && editH.indexOf('id="auto-backup-hour"') >= 0,
+    '点「更改」后才出现可编辑的邮箱和时间');
+  const hourSel = (editH.match(/<select class="select" id="auto-backup-hour">[\s\S]*?<\/select>/) || [''])[0];
   ok((hourSel.match(/<option/g) || []).length === 24, '时间下拉是 24 个整点', (hourSel.match(/<option/g) || []).length);
+  ok(hourSel.indexOf('<option value="18" selected>') >= 0, '下拉停在上次保存的 18:00');
+  ok(editH.indexOf('id="auto-backup-full"') >= 0, '有「同时附上整库 .db」选项');
+  ok(editH.indexOf('data-act="save-auto-backup"') >= 0 && editH.indexOf('data-act="cancel-auto-backup"') >= 0,
+    '编辑态有「保存」和「取消」');
+
+  click(full.listeners, 'cancel-auto-backup');
+  ok(full.nodes['#page'].innerHTML.indexOf('id="auto-backup-email"') < 0, '点「取消」又锁回去');
+
+  // 保存：填好表单点保存，看有没有留在卡片里的成功反馈
+  click(full.listeners, 'edit-auto-backup');
+  full.nodes['#auto-backup-email'] = el('auto-backup-email');
+  full.nodes['#auto-backup-email'].value = 'a@b.com';
+  full.nodes['#auto-backup-hour'] = el('auto-backup-hour');
+  full.nodes['#auto-backup-hour'].value = '7';
+  full.nodes['#auto-backup-full'] = el('auto-backup-full');
+  full.nodes['#auto-backup-full'].checked = false;
+  click(full.listeners, 'save-auto-backup');
+  for (let i = 0; i < 8; i++) await tick();
+  const savedH = full.nodes['#page'].innerHTML;
+  ok(savedH.indexOf('notice-ok') >= 0 && savedH.indexOf('已保存并生效') >= 0,
+    '保存后卡片里留下绿色的「已保存并生效」反馈');
+  ok(savedH.indexOf('每天 07:00') >= 0, '反馈里带上了新的发送时间');
+  ok(savedH.indexOf('id="auto-backup-email"') < 0, '保存后自动锁回去，不用再点一次');
 
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
