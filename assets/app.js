@@ -1340,6 +1340,44 @@
         '</div></div>';
     }
 
+    const st = state.settings || {};
+    const autoOn = !!st.auto_backup;
+    const autoHour = Number(st.backup_hour === null || st.backup_hour === undefined ? 3 : st.backup_hour);
+    const hourOpts = [];
+    for (let h = 0; h < 24; h++) {
+      hourOpts.push('<option value="' + h + '"' + (h === autoHour ? ' selected' : '') + '>' + (h < 10 ? '0' + h : h) + ':00</option>');
+    }
+    const autoCard =
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">自动备份到邮箱</h3>' +
+        '<span class="tag ' + (autoOn ? 'tag-已确认' : 'tag-已取消') + '">' + (autoOn ? '已开启' : '未开启') + '</span></div>' +
+      '<div class="card-body">' +
+        '<p class="hint" style="margin:0 0 14px">每天定时把本团队的数据打包成附件，发到你指定的邮箱。' +
+          '硬盘坏了、误删了、换机器，都能从邮箱里把备份取回来。' +
+          '发信要用 <b>「设置 → 通知 → 邮箱服务」里的 SMTP 账号</b>（EmailJS 不支持附件）。</p>' +
+        '<label style="display:flex;align-items:center;gap:8px;font-size:13.5px;margin-bottom:12px">' +
+          '<input type="checkbox" id="auto-backup-on"' + (autoOn ? ' checked' : '') + '> 每天自动备份一次</label>' +
+        '<div class="field"><label>发到这个邮箱（多个用逗号隔开，最多 3 个）</label>' +
+          '<input class="input" id="auto-backup-email" value="' + esc(st.backup_email || '') + '" placeholder="例如 123456@qq.com"></div>' +
+        '<div class="form-row">' +
+          '<div class="field"><label>每天几点发</label><select class="select" id="auto-backup-hour">' + hourOpts.join('') + '</select></div>' +
+          '<div class="field"><label>备份内容</label>' +
+            '<label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-top:8px">' +
+              '<input type="checkbox" id="auto-backup-full"' + (st.backup_full ? ' checked' : '') + '> 同时附上整库 .db</label>' +
+            '<div class="hint" style="margin-top:4px">整库含所有团队与密钥，只给统筹开</div>' +
+          '</div>' +
+        '</div>' +
+        (st.last_backup_at
+          ? '<div class="notice' + (/失败/.test(String(st.last_backup_note || '')) ? ' notice-warn' : '') + '" style="margin:4px 0 0">' +
+              '上次备份：' + esc(st.last_backup_at) + '　' + esc(st.last_backup_note || '') + '</div>'
+          : '') +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">' +
+          '<button class="btn btn-primary btn-sm" data-act="save-auto-backup">保存</button>' +
+          '<button class="btn btn-sm" data-act="run-auto-backup">立即备份一次</button>' +
+        '</div>' +
+        '<p class="hint" style="margin:12px 0 0">附件上限 15MB。JSON 备份不含邮箱授权码 / 微信密钥 / PushPlus token（导入后重填一次即可）；' +
+          '整库 .db 是完整快照，请妥善保管。</p>' +
+      '</div></div>';
+
     return '<div class="card"><div class="card-head"><h3 class="card-title">导出备份</h3></div><div class="card-body">' +
         stats +
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px">' +
@@ -1350,6 +1388,8 @@
           'JSON 只含本团队的数据，适合换服务器、换团队时搬数据；.db 是完整数据库文件（含所有团队），适合整机备份。' +
         '</p>' +
       '</div></div>' +
+
+      autoCard +
 
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">导入 / 恢复</h3></div><div class="card-body">' +
         '<p class="hint" style="margin:0 0 12px">' +
@@ -2567,6 +2607,8 @@
       case 'save-wechat': saveWechatCfg(); break;
       case 'export-json': downloadBackup('json'); break;
       case 'export-db': downloadBackup('db'); break;
+      case 'save-auto-backup': saveAutoBackup(); break;
+      case 'run-auto-backup': runAutoBackup(); break;
       case 'import-preview': previewImport(); break;
       case 'import-commit': commitImport(el.getAttribute('data-file')); break;
       case 'add-project': openProjectModal(null); break;
@@ -3098,6 +3140,50 @@
       setTimeout(() => URL.revokeObjectURL(url), 3000);
       toast('已下载 ' + name);
     } catch (e) { toast('导出失败：' + e.message, 4600); }
+  }
+
+  /* 自动备份：每天定时把团队备份发到指定邮箱 */
+  function autoBackupForm() {
+    return {
+      on: !!($('#auto-backup-on') || {}).checked,
+      email: String(($('#auto-backup-email') || {}).value || '').trim(),
+      hour: Number(($('#auto-backup-hour') || {}).value || 3),
+      full: !!($('#auto-backup-full') || {}).checked
+    };
+  }
+
+  async function saveAutoBackup() {
+    const f = autoBackupForm();
+    if (f.on && !f.email) { toast('请先填一个收件邮箱'); return; }
+    try {
+      await window.__api('/api/backup/auto', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: f.on, email: f.email, hour: f.hour, full: f.full })
+      });
+      await loadAll(); render();
+      toast(f.on ? '已开启：每天 ' + (f.hour < 10 ? '0' + f.hour : f.hour) + ':00 备份到 ' + f.email : '已关闭自动备份');
+    } catch (e) { toast('保存失败：' + e.message, 4600); }
+  }
+
+  async function runAutoBackup() {
+    const f = autoBackupForm();
+    if (!f.email) { toast('先填收件邮箱再发'); return; }
+    // 先把当前表单存一次，免得「填了邮箱但没点保存」时发不出去
+    try {
+      await window.__api('/api/backup/auto', {
+        method: 'POST',
+        body: JSON.stringify({ enabled: f.on, email: f.email, hour: f.hour, full: f.full })
+      });
+    } catch (e) { /* 配置没存上就让下一步报具体原因 */ }
+    toast('正在打包并发送，稍等…', 3000);
+    try {
+      const r = await window.__api('/api/backup/auto/run', { method: 'POST', body: '{}' });
+      await loadAll(); render();
+      toast(r.note || '已发送', 6000);
+    } catch (e) {
+      await loadAll(); render();
+      toast('备份失败：' + e.message, 8000);
+    }
   }
 
   async function previewImport() {

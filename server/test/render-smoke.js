@@ -454,6 +454,19 @@ function click(listeners, act, attrs) {
   ok(rngH.indexOf('id="off-date"') < 0, '管理员的弹窗里没有单日日期框');
   ok(rngH.indexOf('休息日里不会被排进预约单') >= 0, '提示文案一致');
 
+  console.log('\n[15] 设置 → 数据备份：自动备份到邮箱');
+  click(full.listeners, 'nav', { nav: 'settings' });
+  click(full.listeners, 'settings-tab', { tab: 'data' });
+  const dataH = full.nodes['#page'].innerHTML;
+  ok(dataH.indexOf('自动备份到邮箱') >= 0, '数据备份页有「自动备份到邮箱」卡片');
+  ok(dataH.indexOf('id="auto-backup-email"') >= 0, '有收件邮箱输入框');
+  ok(dataH.indexOf('id="auto-backup-hour"') >= 0, '有每天几点发的选择');
+  ok(dataH.indexOf('id="auto-backup-full"') >= 0, '有「同时附上整库 .db」选项');
+  ok(dataH.indexOf('data-act="save-auto-backup"') >= 0 && dataH.indexOf('data-act="run-auto-backup"') >= 0,
+    '有「保存」和「立即备份一次」按钮');
+  const hourSel = (dataH.match(/<select class="select" id="auto-backup-hour">[\s\S]*?<\/select>/) || [''])[0];
+  ok((hourSel.match(/<option/g) || []).length === 24, '时间下拉是 24 个整点', (hourSel.match(/<option/g) || []).length);
+
   console.log('\n结果：' + pass + ' 通过，' + fail + ' 失败');
   process.exit(fail ? 1 : 0);
 })();

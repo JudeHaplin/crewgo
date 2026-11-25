@@ -7,6 +7,7 @@
  */
 const { raw } = require('./store');
 const mailer = require('./mailer');
+const autobackup = require('./autobackup');
 
 const pushApi = 'https://www.pushplus.plus/send';
 
@@ -245,6 +246,9 @@ function start(log) {
         if (ok && log) log('每日汇总已发送');
       }
     } catch (e) { if (log) log('汇总任务出错：' + e.message); }
+    try {
+      await autobackup.tick(log);
+    } catch (e) { if (log) log('自动备份任务出错：' + e.message); }
   };
   setTimeout(tick, 20 * 1000);
   timer = setInterval(tick, 5 * 60 * 1000);

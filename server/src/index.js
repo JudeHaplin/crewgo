@@ -16,6 +16,7 @@ const mailer = require('./mailer');
 const team = require('./team');
 const wechat = require('./wechat');
 const backup = require('./backup');
+const autobackup = require('./autobackup');
 const schedule = require('./schedule');
 
 const PORT = Number(process.env.PORT || 8080);
@@ -189,6 +190,8 @@ const wxBound = id => !!store.raw().prepare('SELECT 1 AS x FROM wx_accounts WHER
 
 // 测试邮件限流：同一个人 60 秒内只能发一封，免得连点把发信额度刷完
 const mailTestAt = new Map();
+// 手动备份限流：同一个团队 30 秒一次，避免连点把邮箱额度刷爆
+const backupRunAt = new Map();
 
 const publicProfile = row => ({
   id: row.id,
@@ -686,6 +689,63 @@ async function handleApi(req, res, pathname, url) {
     const report = backup.preview(actor, buf, filename, dry);
     if (!dry) log('导入 ' + filename + '（' + actor.name + '）：' + String(JSON.stringify(report)).slice(0, 220));
     return send(res, 200, report);
+  }
+
+  /* ---------------- 自动备份到邮箱 ---------------- */
+  if (pathname === '/api/backup/auto' && req.method === 'GET') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isOwner(actor)) return fail(res, 403, '自动备份发的是整个团队的数据，只有统筹管理员能看');
+    store.ensureTeamSettings(actor.teamId);
+    const s = store.raw().prepare('SELECT * FROM settings WHERE team_id = ? ORDER BY id LIMIT 1').get(actor.teamId) || {};
+    const accounts = mailer.accountsOf(actor.teamId);
+    return send(res, 200, {
+      enabled: Number(s.auto_backup) === 1,
+      email: s.backup_email || '',
+      hour: Number(s.backup_hour === null || s.backup_hour === undefined ? 3 : s.backup_hour),
+      full: Number(s.backup_full) === 1,
+      last_at: s.last_backup_at || '',
+      last_note: s.last_backup_note || '',
+      mail_ready: mailer.configured(actor.teamId),
+      smtp_ready: accounts.some(a => a.kind === 'smtp' && a.enabled === 1 && mailer.ready(a)),
+      max_mb: Math.round(autobackup.MAX_ATTACH / 1048576)
+    });
+  }
+
+  if (pathname === '/api/backup/auto' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isOwner(actor)) return fail(res, 403, '自动备份发的是整个团队的数据，只有统筹管理员能设置');
+    const body = await readBody(req);
+    const enabled = !!body.enabled;
+    const emails = autobackup.emailsOf(body.email);
+    if (String(body.email || '').trim() && !emails.length) return fail(res, 400, '收件邮箱格式不对，多个用逗号隔开');
+    if (enabled && !emails.length) return fail(res, 400, '请先填一个收件邮箱，否则定时备份发不出去');
+    let hour = Number(body.hour);
+    if (!Number.isFinite(hour)) hour = 3;
+    hour = Math.max(0, Math.min(23, Math.round(hour)));
+    store.ensureTeamSettings(actor.teamId);
+    store.raw().prepare('UPDATE settings SET auto_backup = ?, backup_email = ?, backup_hour = ?, backup_full = ? WHERE team_id = ?')
+      .run(enabled ? 1 : 0, emails.join(','), hour, body.full ? 1 : 0, actor.teamId);
+    log('自动备份设置已更新（' + actor.name + '）：' + (enabled ? '每天 ' + hour + ':00 发到 ' + emails.join('、') : '已关闭'));
+    return send(res, 200, { ok: true, enabled: enabled, email: emails.join(','), hour: hour, full: !!body.full });
+  }
+
+  if (pathname === '/api/backup/auto/run' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isOwner(actor)) return fail(res, 403, '自动备份发的是整个团队的数据，只有统筹管理员能操作');
+    const last = backupRunAt.get(actor.teamId) || 0;
+    if (Date.now() - last < 5 * 1000) return fail(res, 429, '刚发过一次，等 5 秒再试');
+    backupRunAt.set(actor.teamId, Date.now());
+    try {
+      const r = await autobackup.runTeam(actor.teamId, { manual: true });
+      log('手动备份发送（' + actor.name + '）：' + r.note);
+      if (!r.ok) return fail(res, 502, r.note);
+      return send(res, 200, r);
+    } catch (e) {
+      return fail(res, e.status || 500, e.message || '备份失败');
+    }
   }
 
   /* ---------------- 排期校验 / 休息日 ---------------- */

@@ -39,6 +39,13 @@ CREATE TABLE IF NOT EXISTS settings (
   wx_mp_secret TEXT,
   wx_qr_appid TEXT,
   wx_qr_secret TEXT,
+  auto_backup INTEGER NOT NULL DEFAULT 0,
+  backup_email TEXT,
+  backup_hour INTEGER DEFAULT 3,
+  backup_full INTEGER NOT NULL DEFAULT 0,
+  last_backup_date TEXT,
+  last_backup_at TEXT,
+  last_backup_note TEXT,
   updated_at TEXT
 );
 `;
@@ -269,9 +276,10 @@ const TABLES = {
     cols: ['id', 'team_id', 'notify_enabled', 'pushplus_token', 'email_enabled', 'emailjs_service_id',
       'emailjs_template_id', 'emailjs_public_key', 'digest_email', 'last_digest_date', 'mail_mode', 'smtp_host',
       'smtp_port', 'smtp_user', 'smtp_pass', 'smtp_from', 'smtp_name', 'wx_mp_appid', 'wx_mp_secret',
-      'wx_qr_appid', 'wx_qr_secret', 'updated_at'],
-    bool: ['notify_enabled', 'email_enabled'],
-    num: ['id', 'smtp_port', 'team_id']
+      'wx_qr_appid', 'wx_qr_secret', 'auto_backup', 'backup_email', 'backup_hour', 'backup_full',
+      'last_backup_date', 'last_backup_at', 'last_backup_note', 'updated_at'],
+    bool: ['notify_enabled', 'email_enabled', 'auto_backup', 'backup_full'],
+    num: ['id', 'smtp_port', 'team_id', 'backup_hour']
   },
   email_logs: {
     cols: ['id', 'team_id', 'owner_id', 'kind', 'to_email', 'subject', 'status', 'detail', 'created_at'],
@@ -338,7 +346,15 @@ const SETTINGS_MIGRATIONS = [
   ['wx_mp_appid', 'TEXT'],
   ['wx_mp_secret', 'TEXT'],
   ['wx_qr_appid', 'TEXT'],
-  ['wx_qr_secret', 'TEXT']
+  ['wx_qr_secret', 'TEXT'],
+  // 自动备份：每天定时把团队备份发到指定邮箱
+  ['auto_backup', 'INTEGER NOT NULL DEFAULT 0'],
+  ['backup_email', 'TEXT'],
+  ['backup_hour', 'INTEGER DEFAULT 3'],
+  ['backup_full', 'INTEGER NOT NULL DEFAULT 0'],
+  ['last_backup_date', 'TEXT'],
+  ['last_backup_at', 'TEXT'],
+  ['last_backup_note', 'TEXT']
 ];
 
 const PROFILE_MIGRATIONS = [

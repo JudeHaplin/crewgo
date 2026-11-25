@@ -51,14 +51,28 @@ const stripHtml = html => String(html || '')
   .replace(/\n{3,}/g, '\n\n')
   .trim();
 
+/* 附件名：纯 ASCII 直接引号；中文走 RFC 2231（filename*=UTF-8''%XX），各客户端都认 */
+function nameParam(name, forType) {
+  const s = String(name || 'attachment');
+  const key = forType ? 'name' : 'filename';
+  if (/^[\x20-\x7e]*$/.test(s)) return key + '="' + s.replace(/["\\]/g, '_') + '"';
+  const enc = encodeURIComponent(s).replace(/['()*!]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return key + "*=UTF-8''" + enc;
+}
+
 function buildMessage(o) {
-  const boundary = '=_crewgo_' + crypto.randomBytes(12).toString('hex');
+  const altBoundary = '=_crewgo_' + crypto.randomBytes(12).toString('hex');
+  const mixBoundary = '=_crewgo_mix_' + crypto.randomBytes(12).toString('hex');
   const domain = String(o.from || '').split('@')[1] || 'crewgo.local';
   const fromLine = o.fromName ? encWords(o.fromName) + ' <' + o.from + '>' : o.from;
   const toLine = o.toName ? encWords(o.toName) + ' <' + o.to + '>' : o.to;
   const text = o.text || stripHtml(o.html) || o.subject || '';
   const html = o.html || '<pre style="font:14px/1.7 -apple-system,Segoe UI,Microsoft YaHei,sans-serif;white-space:pre-wrap">' +
     String(text).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])) + '</pre>';
+
+  const attachments = (Array.isArray(o.attachments) ? o.attachments : [])
+    .filter(a => a && a.content !== undefined && a.content !== null)
+    .slice(0, 10);
 
   const head = [
     'From: ' + fromLine,
@@ -67,25 +81,49 @@ function buildMessage(o) {
     'Date: ' + new Date().toUTCString().replace('GMT', '+0000'),
     'Message-ID: <' + crypto.randomBytes(10).toString('hex') + '@' + domain + '>',
     'MIME-Version: 1.0',
-    'Content-Type: multipart/alternative; boundary="' + boundary + '"',
     'X-Mailer: CrewGo'
-  ].join('\r\n');
+  ];
 
-  const body = [
-    '--' + boundary,
+  const altBody = [
+    '--' + altBoundary,
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     wrap76(b64(text)),
-    '--' + boundary,
+    '--' + altBoundary,
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     wrap76(b64(html)),
-    '--' + boundary + '--'
+    '--' + altBoundary + '--'
   ].join('\r\n');
 
-  return head + '\r\n\r\n' + body + '\r\n';
+  if (!attachments.length) {
+    head.push('Content-Type: multipart/alternative; boundary="' + altBoundary + '"');
+    return head.join('\r\n') + '\r\n\r\n' + altBody + '\r\n';
+  }
+
+  // 有附件：外层 multipart/mixed，内层还是「纯文本 + HTML」
+  head.push('Content-Type: multipart/mixed; boundary="' + mixBoundary + '"');
+  const parts = [
+    '--' + mixBoundary,
+    'Content-Type: multipart/alternative; boundary="' + altBoundary + '"',
+    '',
+    altBody
+  ];
+  for (const a of attachments) {
+    const buf = Buffer.isBuffer(a.content) ? a.content : Buffer.from(String(a.content), 'utf8');
+    parts.push(
+      '--' + mixBoundary,
+      'Content-Type: ' + (a.type || 'application/octet-stream') + '; ' + nameParam(a.name, true),
+      'Content-Disposition: attachment; ' + nameParam(a.name, false),
+      'Content-Transfer-Encoding: base64',
+      '',
+      wrap76(buf.toString('base64'))
+    );
+  }
+  parts.push('--' + mixBoundary + '--');
+  return head.join('\r\n') + '\r\n\r\n' + parts.join('\r\n') + '\r\n';
 }
 
 /* ---------- 连接 ---------- */

@@ -106,7 +106,11 @@ function markFail(a, msg) {
 /** 真正发一封：只走指定账号，不换 */
 async function attempt(a, opt) {
   try {
+    const attachments = Array.isArray(opt.attachments) ? opt.attachments : null;
     if (a.kind === 'emailjs') {
+      if (attachments && attachments.length) {
+        return { ok: false, error: 'EmailJS 不能发附件，自动备份请改用 SMTP 邮箱服务' };
+      }
       const res = await fetch(mailApi, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -138,7 +142,8 @@ async function attempt(a, opt) {
       toName: opt.toName || '',
       subject: opt.subject || '速派通知',
       html: opt.html || '',
-      text: opt.text || ''
+      text: opt.text || '',
+      attachments: attachments || undefined
     });
     return r.ok ? { ok: true } : { ok: false, error: r.error || '发送失败' };
   } catch (e) {
