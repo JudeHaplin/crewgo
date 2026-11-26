@@ -38,18 +38,18 @@ async function upload(token, name, buf, apptId, mime) {
 
 (async () => {
   console.log('\n[1] 建团队：统筹 + 维修工 + 预约人');
-  const setup = await api('/api/auth/setup', { name: '王建国', pin: '1234', phone: '13800000001' });
+  const setup = await api('/api/auth/setup', { name: '王建国', pin: '123456', phone: '13800000001' });
   const admin = setup.json.token;
   const teamCode = setup.json.team.code;
   ok(setup.status === 200 && !!admin, '初始化统筹账号');
 
-  const regTech = await api('/api/auth/register', { name: '张工', pin: '5678', phone: '13800000002' });
+  const regTech = await api('/api/auth/register', { name: '张工', pin: '567890', phone: '13800000002' });
   const tech = regTech.json.token, techUid = regTech.json.user.id;
   await api('/api/team/join', { code: teamCode }, tech);
   let reqs = await api('/api/team/requests', null, admin);
   await api('/api/team/requests/decide', { id: reqs.json.data.find(r => r.profile_id === techUid).id, approve: true }, admin);
 
-  const regReq = await api('/api/auth/register', { name: '李姐', pin: '4321', phone: '13800000003' });
+  const regReq = await api('/api/auth/register', { name: '李姐', pin: '432100', phone: '13800000003' });
   const req = regReq.json.token, reqUid = regReq.json.user.id;
   await api('/api/team/join', { code: teamCode }, req);
   reqs = await api('/api/team/requests', null, admin);
@@ -98,7 +98,7 @@ async function upload(token, name, buf, apptId, mime) {
   ok(bodyTok.status === 200, '带 Authorization 头也能下载');
 
   console.log('\n[5] 传别的团队的预约单上会被拒');
-  const setup2 = await api('/api/auth/setup', { name: '赵工', pin: '1234', phone: '13900000009' });
+  const setup2 = await api('/api/auth/setup', { name: '赵工', pin: '123456', phone: '13900000009' });
   ok(setup2.status === 409 || setup2.status === 200, '第二个团队（或已初始化过）');
   const other = setup2.status === 200 ? setup2.json.token : null;
   if (other) {

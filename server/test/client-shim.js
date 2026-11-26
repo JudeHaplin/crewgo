@@ -29,7 +29,7 @@ const db = cloud.database;
   console.log('\n[1] 适配层登录');
   const st = await cloud.auth.status();
   ok(typeof st.initialized === 'boolean', '/auth/status 可用', st);
-  const su = await cloud.auth.setup('测试员', '1234');
+  const su = await cloud.auth.setup('测试员', '123456');
   ok(su.error === null && su.data.user.name === '测试员', 'setup 返回 session');
   const sess = await cloud.auth.getSession();
   ok(sess.data && sess.data.user && sess.data.user.id, 'getSession 带 user.id');
@@ -71,15 +71,15 @@ const db = cloud.database;
   ok(del.data.length === 1, 'delete().eq().select() 生效');
 
   console.log('\n[4] 错误形态（不抛异常，返回 error）');
-  await db.from('profiles').insert({ name: '小工', role: 'tech', pin: '5678' }).select();
-  const relogin = await cloud.auth.signIn('小工', '5678');
-  ok(relogin.error === null && relogin.data.user.role === 'tech', '新增人员可直接用 PIN 登录');
+  await db.from('profiles').insert({ name: '小工', role: 'tech', pin: '567890' }).select();
+  const relogin = await cloud.auth.signIn('小工', '567890');
+  ok(relogin.error === null && relogin.data.user.role === 'tech', '新增人员可直接用密码登录');
   const denied = await db.from('settings').update({ digest_email: 'x@y.com' }).select();
   ok(denied.error && /团队管理员|权限/.test(denied.error.message), '越权返回 error 而不是抛出', denied.error);
 
   const selfOnly = await db.from('profiles').update({ role: 'admin' }).eq('id', 'someone').select();
   ok(selfOnly.error !== null, '非管理员改他人档案被拒');
-  await cloud.auth.signIn('测试员', '1234');
+  await cloud.auth.signIn('测试员', '123456');
 
   const badTable = await db.from('nope').select('*');
   ok(badTable.error !== null, '未知表返回 error');

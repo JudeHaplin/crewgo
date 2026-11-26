@@ -11,6 +11,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const store = require('./store');
 const auth = require('./auth');
+const sessions = require('./sessions');
 const jobs = require('./jobs');
 const mailer = require('./mailer');
 const team = require('./team');
@@ -79,14 +80,14 @@ function timeMs(v) {
   return new Date(s.replace(' ', 'T')).getTime();       // 老的本地时间字符串
 }
 
-/* ---------- PIN 规则：只限长度，字母/数字/符号都可以（与前端一致） ---------- */
-const PIN_MIN = 4;
-const PIN_MAX = 32;
-/** 去掉首尾空格（中间空格属于 PIN 的一部分，保留），避免手机键盘尾随空格导致登录失败 */
-const normPin = v => String(v === null || v === undefined ? '' : v).trim();
-function pinError(pin) {
-  if (pin.length < PIN_MIN) return 'PIN 至少 ' + PIN_MIN + ' 位';
-  if (pin.length > PIN_MAX) return 'PIN 最多 ' + PIN_MAX + ' 位（字母、数字、符号都可以）';
+/* ---------- 密码规则：字母/数字/符号都可以，6–64 位（与前端一致） ---------- */
+const PASSWORD_MIN = 6;
+const PASSWORD_MAX = 64;
+/** 去掉首尾空格（中间空格属于密码的一部分，保留），避免手机键盘尾随空格导致登录失败 */
+const normPassword = v => String(v === null || v === undefined ? '' : v).trim();
+function passwordError(pw) {
+  if (pw.length < PASSWORD_MIN) return '密码至少 ' + PASSWORD_MIN + ' 位';
+  if (pw.length > PASSWORD_MAX) return '密码最多 ' + PASSWORD_MAX + ' 位（字母、数字、符号都可以）';
   return '';
 }
 
@@ -176,13 +177,21 @@ function actorFromToken(token) {
   if (!payload) return null;
   const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(payload.pid);
   if (!row || row.active === 0) return null;
+  // 令牌版本对不上 = 改过密码（或在别处退出了所有设备），这份旧令牌作废
+  if (Number(payload.tv || 0) !== Number(row.token_version || 0)) return null;
+  // 带 sid 的令牌还要看会话有没有被撤掉；升级前签发的令牌没有 sid，靠版本号兜底
+  if (payload.sid) {
+    if (!sessions.get(payload.sid)) return null;
+    sessions.touch(payload.sid);
+  }
   return {
     id: row.id,
     name: row.name,
     role: row.role,
     teamId: row.team_id ? Number(row.team_id) : null,
     teamRole: row.team_role || 'member',
-    needProfile: row.need_profile === 1
+    needProfile: row.need_profile === 1,
+    sid: payload.sid || null
   };
 }
 
@@ -230,10 +239,17 @@ function baseUrl(req) {
 const redirectUri = req => baseUrl(req).replace(/\/+$/, '') + '/api/auth/wechat/callback';
 
 /** 一次性 ticket → token（微信授权回来时用，避免 token 出现在地址栏） */
-function sessionOf(row) {
+/**
+ * 签发令牌。keepSid 传当前会话 id 表示「就用这台设备原来的会话」——
+ * 补资料、加入团队这类操作不该在设备列表里多出一条新记录。
+ */
+function sessionOf(row, req, keepSid) {
   const t = team.teamById(row.team_id);
+  let sid = keepSid && sessions.get(keepSid) ? keepSid : null;
+  if (!sid) sid = keepSid ? sessions.create(row.id, req) : sessions.createOrReuse(row.id, req);
   return {
-    token: auth.issue(row),
+    token: auth.issue(row, sid),
+    device: sid,
     user: publicProfile(row),
     team: team.publicTeam(t),
     pending: row.team_id ? null : team.myRequest(row.id),
@@ -261,9 +277,10 @@ async function handleApi(req, res, pathname, url) {
     if (Number(row.n) > 0) return fail(res, 409, '系统已经初始化过了，请直接登录，或用团队码加入');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
-    const pin = normPin(body.pin);
+    // 前端历史上传 pin，现在传 password；两个都收，老缓存页面也还能用
+    const password = normPassword(body.password != null ? body.password : body.pin);
     if (!name) return fail(res, 400, '请填写姓名');
-    const pe = pinError(pin);
+    const pe = passwordError(password);
     if (pe) return fail(res, 400, pe);
     const phoneRaw = String(body.phone || '').trim();
     if (phoneRaw) {
@@ -273,12 +290,12 @@ async function handleApi(req, res, pathname, url) {
     const id = 'p_' + Math.random().toString(36).slice(2, 10);
     store.raw().prepare(
       "INSERT INTO profiles (id, name, phone, role, color, pin_hash, active, user_id) VALUES (?,?,?,?,?,?,1,?)"
-    ).run(id, name, phoneRaw ? store.normPhone(phoneRaw) : null, 'admin', '#2b6ef6', auth.hashPin(pin), id);
+    ).run(id, name, phoneRaw ? store.normPhone(phoneRaw) : null, 'admin', '#2b6ef6', auth.hashPin(password), id);
     const prof = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
     const created = team.createTeam(prof, String(body.teamName || '').trim() || (name + '的团队'));
     log('初始化完成：' + name + '，团队「' + created.team.name + '」码 ' + created.code);
     const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
-    return send(res, 200, sessionOf(fresh));
+    return send(res, 200, sessionOf(fresh, req));
   }
 
   /* 自助注册：此时还看不到任何团队数据，要凭团队码申请并被同意 */
@@ -286,10 +303,10 @@ async function handleApi(req, res, pathname, url) {
     if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
-    const pin = normPin(body.pin);
+    const password = normPassword(body.password != null ? body.password : body.pin);
     if (!name) return fail(res, 400, '请填写姓名');
     if (name.length > 20) return fail(res, 400, '姓名最多 20 个字');
-    const pe = pinError(pin);
+    const pe = passwordError(password);
     if (pe) return fail(res, 400, pe);
     const phoneRaw = String(body.phone || '').trim();
     if (phoneRaw) {
@@ -301,31 +318,32 @@ async function handleApi(req, res, pathname, url) {
     const id = team.newProfileId();
     store.raw().prepare(
       "INSERT INTO profiles (id, name, phone, role, color, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,1,?,'member',0)"
-    ).run(id, name, phoneRaw ? store.normPhone(phoneRaw) : null, 'tech', '#2b6ef6', auth.hashPin(pin), id);
+    ).run(id, name, phoneRaw ? store.normPhone(phoneRaw) : null, 'tech', '#2b6ef6', auth.hashPin(password), id);
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
     log('新账号注册（待加入团队）：' + name);
-    return send(res, 200, Object.assign(sessionOf(row), { registered: true }));
+    return send(res, 200, Object.assign(sessionOf(row, req), { registered: true }));
   }
 
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
-    const pin = normPin(body.pin);
-    if (!name || !pin) return fail(res, 400, '请输入姓名和 PIN');
-    // 不同团队可能有同名的人，所以逐条验 PIN 找出正确的那一个
+    const password = normPassword(body.password != null ? body.password : body.pin);
+    if (!name || !password) return fail(res, 400, '请输入姓名和密码');
+    // 不同团队可能有同名的人，所以逐条验密码找出正确的那一个
     const rows = team.findByName(name);
-    const hit = rows.filter(r => auth.verifyPin(pin, r.pin_hash))[0];
+    const hit = rows.filter(r => auth.verifyPin(password, r.pin_hash))[0];
     if (!hit) {
       markFail(ip);
-      return fail(res, 401, '姓名或 PIN 不对。忘记 PIN 可让团队管理员在「设置 → 人员」里重设');
+      return fail(res, 401, '姓名或密码不对。忘记密码可让团队管理员在「设置 → 人员」里重设');
     }
     attempts.delete(ip);
     const patch = ["last_login_at = datetime('now','localtime')"];
     if (!hit.user_id) patch.push('user_id = id');
     store.raw().prepare('UPDATE profiles SET ' + patch.join(', ') + ' WHERE id = ?').run(hit.id);
     const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(hit.id);
-    return send(res, 200, sessionOf(fresh));
+    sessions.prune();
+    return send(res, 200, sessionOf(fresh, req));
   }
 
   if (pathname === '/api/auth/me') {
@@ -364,21 +382,72 @@ async function handleApi(req, res, pathname, url) {
     store.raw().prepare('UPDATE profiles SET name = ?, phone = ?, need_profile = 0 WHERE id = ?')
       .run(name, store.normPhone(phone), row.id);
     const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(row.id);
-    return send(res, 200, sessionOf(fresh));
+    return send(res, 200, sessionOf(fresh, req, actor.sid));
   }
 
-  if (pathname === '/api/auth/pin' && req.method === 'POST') {
+  /* 改密码：成功后 token_version +1，除了当前这台，其它设备上的令牌立刻作废 */
+  if ((pathname === '/api/auth/password' || pathname === '/api/auth/pin') && req.method === 'POST') {
     const actor = actorFrom(req);
     if (!actor) return fail(res, 401, '未登录');
     const body = await readBody(req);
+    const oldPw = normPassword(body.oldPassword != null ? body.oldPassword : body.oldPin);
+    const newPw = normPassword(body.newPassword != null ? body.newPassword : body.newPin);
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
-    if (row.pin_hash && !auth.verifyPin(normPin(body.oldPin), row.pin_hash)) return fail(res, 400, '原 PIN 不对');
-    const newPin = normPin(body.newPin);
-    const pe = pinError(newPin);
+    if (row.pin_hash && !auth.verifyPin(oldPw, row.pin_hash)) return fail(res, 400, '原密码不对');
+    const pe = passwordError(newPw);
     if (pe) return fail(res, 400, pe);
-    if (newPin === normPin(body.oldPin)) return fail(res, 400, '新 PIN 和原 PIN 一样');
-    store.raw().prepare('UPDATE profiles SET pin_hash = ? WHERE id = ?').run(auth.hashPin(newPin), actor.id);
+    if (newPw === oldPw) return fail(res, 400, '新密码和原密码一样，换一个吧');
+    store.raw().prepare('UPDATE profiles SET pin_hash = ? WHERE id = ?').run(auth.hashPin(newPw), actor.id);
+    // 版本号 +1 并清空全部会话：其它手机、电脑上的登录全部失效
+    sessions.invalidateAll(actor.id);
+    const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    log(actor.name + ' 修改了登录密码，其它设备已退出');
+    // 当前这台换个新会话继续用，不用重新登录
+    return send(res, 200, Object.assign(sessionOf(fresh, req), { kicked: true }));
+  }
+
+  /* 退出登录：只撤掉当前这台设备，别处登录的不管 */
+  if (pathname === '/api/auth/logout' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (actor && actor.sid) sessions.revoke(actor.id, actor.sid);
     return send(res, 200, { ok: true });
+  }
+
+  /* ---------------- 登录设备 ---------------- */
+  if (pathname === '/api/auth/devices' && req.method === 'GET') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const rows = sessions.listOf(actor.id);
+    return send(res, 200, {
+      devices: rows.map(d => Object.assign({}, d, { current: d.id === actor.sid })),
+      // 老令牌（1.2.16 以前签发的）没有会话 id，前端据此提示「重新登录一次就能被管理」
+      legacy: !actor.sid
+    });
+  }
+
+  if (pathname === '/api/auth/devices/revoke' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const id = String(body.id || '');
+    if (!id) return fail(res, 400, '缺少设备 id');
+    if (id === actor.sid) return fail(res, 400, '这是当前设备，直接点「退出登录」就行');
+    if (!sessions.revoke(actor.id, id)) return fail(res, 404, '这台设备已经下线了');
+    return send(res, 200, { ok: true });
+  }
+
+  /* 其它设备全部下线；all=true 时连当前这台一起（需要重新登录） */
+  if (pathname === '/api/auth/devices/revoke-others' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    if (body.all === true) {
+      sessions.invalidateAll(actor.id);
+      log(actor.name + ' 退出了所有设备');
+      return send(res, 200, { ok: true, all: true });
+    }
+    const n = sessions.revokeAll(actor.id, actor.sid);
+    return send(res, 200, { ok: true, revoked: n });
   }
 
   /* ---------------- 微信登录 ---------------- */
@@ -481,7 +550,7 @@ async function handleApi(req, res, pathname, url) {
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(t.pid);
     if (!row) return fail(res, 400, '账号不存在');
     if (t.bind) return send(res, 200, { bind: true, user: publicProfile(row) });
-    return send(res, 200, sessionOf(row));
+    return send(res, 200, sessionOf(row, req));
   }
 
   if (pathname === '/api/auth/wechat/unbind' && req.method === 'POST') {
@@ -515,7 +584,7 @@ async function handleApi(req, res, pathname, url) {
     const created = team.createTeam(row, body.name);
     log('新团队：' + created.team.name + ' 码 ' + created.code + '（创建人 ' + row.name + '）');
     const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
-    return send(res, 200, sessionOf(fresh));
+    return send(res, 200, sessionOf(fresh, req, actor.sid));
   }
 
   if (pathname === '/api/team/join' && req.method === 'POST') {
@@ -527,7 +596,7 @@ async function handleApi(req, res, pathname, url) {
     const r = team.joinByCode(row, body.code, body.message);
     if (r.joined) {
       const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
-      return send(res, 200, Object.assign(sessionOf(fresh), { joined: true }));
+      return send(res, 200, Object.assign(sessionOf(fresh, req, actor.sid), { joined: true }));
     }
     return send(res, 200, { joined: false, pending: true, team: r.team });
   }
@@ -887,17 +956,24 @@ async function handleApi(req, res, pathname, url) {
     if (!actor) return fail(res, 401, '登录已过期，请重新登录');
     if (!actor.teamId) return fail(res, 403, '请先加入团队');
     const body = await readBody(req);
-    // 批量插入时 values 是数组，PIN / 手机号 要逐个处理（否则第一行之后都没写进去）
+    // 批量插入时 values 是数组，密码 / 手机号 要逐个处理（否则第一行之后都没写进去）
     const valList = body && body.values
       ? (Array.isArray(body.values) ? body.values : [body.values])
       : [];
+    /** 这次写入要给谁「重设密码」——写完之后要把那个人的设备全部踢下线 */
+    const pwTargets = [];
     for (const v of valList) {
       if (!v || typeof v !== 'object') continue;
-      if (v.pin != null && v.pin !== '') {
-        const p = normPin(v.pin);
-        const pe = pinError(p);
+      const rawPw = v.password != null ? v.password : v.pin;
+      if (rawPw != null && rawPw !== '') {
+        const p = normPassword(rawPw);
+        const pe = passwordError(p);
         if (pe) return fail(res, 400, pe);
         v.pin_hash = auth.hashPin(p);
+        // 插入时 id 由前端给；更新时 id 在 filters 里
+        const idf = (body.filters || []).find(f => f && f.col === 'id' && f.op === 'eq');
+        const target = v.id || (idf ? idf.val : null);
+        if (target) pwTargets.push(String(target));
       }
       if (v.phone) {
         const phe = store.phoneError(v.phone);
@@ -938,6 +1014,13 @@ async function handleApi(req, res, pathname, url) {
       }
     }
     const result = store.run(actor, body);
+    // 管理员在「人员」里重设了别人的密码 → 那个人的所有设备立即下线，逼对方用新密码登录。
+    // 给自己重设时只踢其它设备，当前这台留着（否则保存完自己就被弹回登录页）。
+    for (const pid of pwTargets) {
+      if (pid === actor.id) sessions.revokeAll(pid, actor.sid);
+      else sessions.invalidateAll(pid);
+    }
+    if (pwTargets.length) log(actor.name + ' 重设了 ' + pwTargets.length + ' 个账号的密码，相关设备已退出');
     // 删预约单时连带清掉附件（文件 + 元数据），避免占着磁盘又查不到
     if (body && body.table === 'appointments' && body.action === 'delete') {
       const ids = (body.filters || []).filter(f => f && f.col === 'id' && f.op === 'eq')

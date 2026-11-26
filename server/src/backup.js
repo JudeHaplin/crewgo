@@ -24,7 +24,7 @@ const TABLES_FOR_TEAM = ['profiles', 'projects', 'appointments', 'notifications'
 
 /* JSON 备份是给人看的、也常被转手（微信/网盘/邮件），明文密钥一律不带出去：
    邮箱授权码、微信 AppSecret、PushPlus token 属于「拿到就能冒用」，导入后重新填一次成本很低。
-   PIN 只存 scrypt 哈希、不可逆，保留下来才能让别人用原 PIN 直接登录。 */
+   密码只存 scrypt 哈希、不可逆，保留下来才能让别人用原密码直接登录。 */
 const SECRET_COLS = ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret', 'pushplus_token', 'push_token'];
 
 function exportTeam(teamId) {
@@ -404,10 +404,12 @@ function importProfiles(actor, list, header, dry) {
       const email = c.email ? String(r[c.email] || '').trim() : '';
       const roleRaw = c.role ? String(r[c.role] || '').trim() : '';
       const role = /统筹|管理|admin/i.test(roleRaw) ? 'admin' : (/预约|客户|requester/i.test(roleRaw) ? 'requester' : 'tech');
+      // 表格里是密码。新手设的至少 6 位，但老表格里可能还有 4 位的老 PIN，
+      // 这里放宽到 4–64 只为了让历史表格能导入，界面上的新密码仍然要求 6 位起。
       const pinRaw = c.pin ? String(r[c.pin] || '').trim() : '';
-      if (pinRaw && (pinRaw.length < 4 || pinRaw.length > 32)) {
+      if (pinRaw && (pinRaw.length < 4 || pinRaw.length > 64)) {
         report.bad++;
-        if (report.errorRows.length < 8) report.errorRows.push({ row: i + 2, why: name + ' 的 PIN 长度不对（4–32 位）' });
+        if (report.errorRows.length < 8) report.errorRows.push({ row: i + 2, why: name + ' 的密码长度不对（6–64 位）' });
         continue;
       }
 

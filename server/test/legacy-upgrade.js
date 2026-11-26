@@ -30,9 +30,9 @@ const db = (token, q) => api('/api/db', q, token);
 
   console.log('\n[2] 老账号照旧能登');
   const bad = await api('/api/auth/login', { name: '王建国', pin: '9999' });
-  ok(bad.status === 401, '错的 PIN 还是进不去');
+  ok(bad.status === 401, '错的老密码还是进不去');
   const login = await api('/api/auth/login', { name: '王建国', pin: '1234' });
-  ok(login.status === 200 && login.json.token, '老 PIN 能登录（哈希格式没变）', login.json && login.json.error);
+  ok(login.status === 200 && login.json.token, '老 4 位 PIN 还能登录（哈希格式没变、不强制重设）', login.json && login.json.error);
   const admin = login.json.token;
   ok(login.json.user.team_role === 'owner', '原管理员自动成为团队统筹', login.json.user.team_role);
   ok(login.json.team && /^[A-Z]{3}\d{6}$/.test(login.json.team.code), '自动生成了团队和团队码：' + (login.json.team && login.json.team.code));
@@ -81,7 +81,7 @@ const db = (token, q) => api('/api/db', q, token);
   }, admin);
   ok(clash.status === 409, '冲突检测对新老数据都生效（返回 409）', clash.status);
 
-  const reg = await api('/api/auth/register', { name: '新来的小李', pin: '8888', phone: '13800000088' });
+  const reg = await api('/api/auth/register', { name: '新来的小李', pin: '888888', phone: '13800000088' });
   ok(reg.status === 200 && reg.json.user.team_id === null, '老库升级后也能自助注册');
   const join = await api('/api/team/join', { code: login.json.team.code }, reg.json.token);
   ok(join.status === 200, '凭团队码申请入团');

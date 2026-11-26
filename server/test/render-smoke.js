@@ -362,7 +362,7 @@ function click(listeners, act, attrs) {
 
   click(full.listeners, 'transfer-owner');
   const th = full.nodes['#modal-root'].innerHTML;
-  ok(th.indexOf('你的登录 PIN') >= 0, '转让弹窗要输入自己的 PIN');
+  ok(th.indexOf('你的登录密码') >= 0, '转让弹窗要输入自己的密码');
   ok(th.indexOf('手动输入「确认」') >= 0, '转让弹窗要手输「确认」');
   ok(th.indexOf('确认转让') >= 0, '有「确认转让」按钮');
 
@@ -394,6 +394,10 @@ function click(listeners, act, attrs) {
   click(lk.listeners, 'settings-tab', { tab: 'me' });
   const meh = lk.nodes['#page'].innerHTML;
   ok(meh.indexOf('readonly') >= 0 && meh.indexOf('已锁定') >= 0, '「我的资料」里的邮箱也锁住了，并指向通知页去改');
+  ok(meh.indexOf('修改登录密码') >= 0 && meh.indexOf('原密码') >= 0, '改密码卡片用的是「密码」而不是 PIN');
+  ok(meh.indexOf('登录设备') >= 0 && meh.indexOf('全部下线') >= 0, '「我的资料」里有登录设备卡片');
+  ok(meh.indexOf('改密码后所有设备都要重新登录') >= 0, '卡片上写明了改密码的后果');
+  ok(meh.indexOf('PIN') < 0, '页面上不再出现 PIN 字样');
 
   console.log('\n[11] 新建预约：项目 / 维修人员必选，预约人自动带出');
   click(full.listeners, 'nav', { nav: 'list' });

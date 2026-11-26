@@ -22,6 +22,8 @@ die() { printf '\033[1;31m错误：\033[0m %s\n' "$*" >&2; exit 1; }
 # 内置兜底版本；正常情况下从 GitHub 取最新 release，免得每次发版都要改脚本。
 # 注意：国内访问 api.github.com 常常超时（这里只等 6 秒），一旦取不到就会用下面这个版本，
 # 所以它必须每次发版都更新——否则「升级」会静默降级回旧版。
+# 兜底版本：只在取不到 GitHub 最新 release 时用。
+# 必须是「真实存在镜像」的版本，所以发版打完 tag、CI 出镜像之后再跟着改成新版本号。
 FALLBACK_TAG="1.2.16"
 if [ -z "${VERSION:-}" ] && [ -z "${IMAGE:-}" ]; then
   VERSION=$(curl -fsSL -m 6 https://api.github.com/repos/JudeHaplin/crewgo/releases/latest 2>/dev/null \

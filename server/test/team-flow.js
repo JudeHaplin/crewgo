@@ -75,7 +75,7 @@ function zip(files) {
 
 (async () => {
   console.log('\n[1] 初始化：账号 + 团队一次建好');
-  const setup = await api('/api/auth/setup', { name: '王建国', pin: '1234', phone: '13800000001' });
+  const setup = await api('/api/auth/setup', { name: '王建国', pin: '123456', phone: '13800000001' });
   ok(setup.status === 200 && setup.json.token, '初始化返回 token');
   ok(/^[A-Z]{3}\d{6}$/.test(setup.json.team.code), '团队码是 3 位大写字母 + 6 位数字：' + setup.json.team.code);
   ok(setup.json.user.team_role === 'owner', '创建人是团队统筹');
@@ -84,13 +84,13 @@ function zip(files) {
   const teamId = setup.json.team.id;
 
   console.log('\n[2] 自助注册：进来之前什么都看不到');
-  const reg = await api('/api/auth/register', { name: '张工', pin: '5678', phone: '13800000002' });
+  const reg = await api('/api/auth/register', { name: '张工', pin: '567890', phone: '13800000002' });
   ok(reg.status === 200 && reg.json.user.team_id === null, '注册成功但还没进团队');
   const tech = reg.json.token;
   const techId = reg.json.user.id;
   ok((await api('/api/auth/me', null, tech)).json.team === null, '未入团时 me 里没有团队');
   ok((await db(tech, { table: 'appointments', action: 'select' })).status === 403, '未入团不能查预约');
-  const dupReg = await api('/api/auth/register', { name: '张工', pin: '9999' });
+  const dupReg = await api('/api/auth/register', { name: '张工', pin: '999999' });
   ok(dupReg.status === 409, '同名待审账号不能重复注册');
 
   console.log('\n[3] 团队码申请 → 管理员同意');
@@ -130,7 +130,7 @@ function zip(files) {
   ok(sameAppt.status === 200, '给同名技术员派了一单');
   const before = (await db(admin, { table: 'profiles', action: 'select' })).json.data.length;
 
-  const regDup = await api('/api/auth/register', { name: '周红祥', pin: '6688', phone: '13122146919' });
+  const regDup = await api('/api/auth/register', { name: '周红祥', pin: '668888', phone: '13122146919' });
   ok(regDup.status === 200, '本人用同样的名字注册新账号');
   const techDup = regDup.json.token, techDupId = regDup.json.user.id;
   const joinDup = await api('/api/team/join', { code: teamCode }, techDup);
@@ -150,7 +150,7 @@ function zip(files) {
 
   console.log('\n[3c] 同名的是管理员：不合并，给中文提示');
   ok((await api('/api/team/members/role', { id: techId, role: 'admin' }, admin)).status === 200, '把张工提成管理员');
-  const regAdm = await api('/api/auth/register', { name: '张工', pin: '1122' });
+  const regAdm = await api('/api/auth/register', { name: '张工', pin: '112233' });
   ok(regAdm.status === 200, '同名新账号可以注册');
   const techAdm = regAdm.json.token, techAdmId = regAdm.json.user.id;
   await api('/api/team/join', { code: teamCode }, techAdm);
@@ -290,7 +290,7 @@ function zip(files) {
   ok(goodPhone.status === 200 && goodPhone.json.user.phone === '13800000002', '带 +86 和横线也能存成 11 位');
 
   console.log('\n[8] 数据按团队隔离');
-  const reg2 = await api('/api/auth/register', { name: '李经理', pin: 'abcd', phone: '13800000003' });
+  const reg2 = await api('/api/auth/register', { name: '李经理', pin: 'abcd1234', phone: '13800000003' });
   const other = reg2.json.token;
   const madeTeam = await api('/api/team/create', { name: '另一个物业' }, other);
   ok(madeTeam.status === 200 && madeTeam.json.team.code !== teamCode, '第二个人建了另一个团队');
@@ -310,7 +310,7 @@ function zip(files) {
   ok(Array.isArray(payload.redacted) && payload.redacted.indexOf('smtp_pass') >= 0, '备份声明了被屏蔽的密钥字段', payload.redacted);
   ok(!settRow.smtp_pass && !settRow.wx_mp_secret && !settRow.wx_qr_secret, 'JSON 备份不含邮箱授权码与微信 Secret', settRow);
   ok(payload.data.profiles.every(p => !p.push_token), 'JSON 备份不含个人推送 token');
-  ok(payload.data.profiles.some(p => p.pin_hash), 'PIN 哈希保留（导入后还能用原 PIN 登录）');
+  ok(payload.data.profiles.some(p => p.pin_hash), '密码哈希保留（导入后还能用原密码登录）');
   const expDb = await fetch(BASE + '/api/backup/export?format=db', { headers: { Authorization: 'Bearer ' + admin } });
   ok(expDb.status === 200 && Number(expDb.headers.get('content-length')) > 1000, '导出整库 .db');
   const dbAsMember = await fetch(BASE + '/api/backup/export?format=db', { headers: { Authorization: 'Bearer ' + tech } });
@@ -348,7 +348,7 @@ function zip(files) {
 
   const mp = await fetch(BASE + '/api/backup/import?filename=人员.csv&dry=0', {
     method: 'POST', headers: { Authorization: 'Bearer ' + admin },
-    body: '姓名,手机号,身份,PIN\r\n孙工,13800000011,维修人员,8888\r\n'
+    body: '姓名,手机号,身份,密码\r\n孙工,13800000011,维修人员,888888\r\n'
   });
   const mpJson = await mp.json();
   ok(mp.status === 200 && mpJson.kind === 'profiles' && mpJson.add === 1, '人员表导入成功');

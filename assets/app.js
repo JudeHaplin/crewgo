@@ -32,10 +32,12 @@
   const PALETTE = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2', '#d94690', '#65a30d'];
   const DOW = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
-  /* PIN 规则：字母、数字、符号都允许，只限长度；后端同规则校验 */
-  const PIN_MIN = 4;
-  const PIN_MAX = 32;
-  const PIN_TIP = '至少 ' + PIN_MIN + ' 位，字母、数字、符号都行，区分大小写';
+  /* 密码规则：字母、数字、符号都允许，6–64 位；后端同规则校验 */
+  const PW_MIN = 6;
+  const PW_MAX = 64;
+  const PW_TIP = '至少 ' + PW_MIN + ' 位，字母、数字、符号都行，区分大小写';
+  // 管理员添加人员时留空用的初始密码，够 6 位、好念，登录后会提示自己改
+  const DEFAULT_PW = '123456';
 
   /* ---------- 工具 ---------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -70,16 +72,16 @@
     return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
   /** 登录凭证统一处理：去掉首尾空格（中间的空格保留），避免手机键盘尾随空格导致登录失败 */
-  const normPin = v => String(v === null || v === undefined ? '' : v).trim();
+  const normPw = v => String(v === null || v === undefined ? '' : v).trim();
   /** 返回错误文案，空串表示通过；规则与服务端一致 */
-  function pinError(pin) {
-    const p = normPin(pin);
-    if (p.length < PIN_MIN) return 'PIN 至少 ' + PIN_MIN + ' 位';
-    if (p.length > PIN_MAX) return 'PIN 最多 ' + PIN_MAX + ' 位';
+  function pwError(pw) {
+    const p = normPw(pw);
+    if (p.length < PW_MIN) return '密码至少 ' + PW_MIN + ' 位';
+    if (p.length > PW_MAX) return '密码最多 ' + PW_MAX + ' 位';
     return '';
   }
-  /** PIN 输入框公共属性：不用数字键盘，关掉首字母大写与自动纠错（否则字母 PIN 会被改掉） */
-  const PIN_ATTRS = ' inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="' + PIN_MAX + '"';
+  /** 密码输入框公共属性：关掉首字母大写与自动纠错（否则字母密码会被改掉） */
+  const PW_ATTRS = ' inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="' + PW_MAX + '"';
   function dayLabel(dateStr) {
     const d = parseYmd(dateStr);
     return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + DOW[(d.getDay() + 6) % 7];
@@ -139,6 +141,8 @@
     wxBannerHidden: false,
     lastNotifId: 0,
     pollTimer: null,
+    devices: [],        // 当前账号登录着的设备（设置 → 我的资料里管理）
+    devicesAt: 0,       // 上次拉取设备列表的时间，切到「我的资料」时按需刷新
     sel: {} // 预约单列表里勾选的 id（批量删除/改状态用）
   };
 
@@ -216,19 +220,19 @@
   }
 
   function loginHtml(msg, ok) {
-    return authCard('登录', '输入姓名和 PIN 即可登录，不用收验证码。',
+    return authCard('登录', '姓名加密码，不用收验证码。',
       msgHtml(msg, ok) +
       '<form data-form="login" novalidate>' +
         '<div class="field"><label for="lg-name">姓名</label>' +
           '<input class="input" id="lg-name" name="name" placeholder="你的姓名" required maxlength="20" autocomplete="username"></div>' +
-        '<div class="field"><label for="lg-pin">PIN</label>' +
-          '<div class="pin-wrap"><input class="input" id="lg-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="你的 PIN" autocomplete="current-password">' +
-          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div></div>' +
+        '<div class="field"><label for="lg-pin">密码</label>' +
+          '<div class="pin-wrap"><input class="input" id="lg-pin" name="pin" type="password"' + PW_ATTRS + ' placeholder="你的登录密码" autocomplete="current-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div></div>' +
         '<button class="btn btn-primary btn-block" type="submit">登录</button>' +
       '</form>' +
       wechatButtons(),
       '还没有账号？<a href="#" data-act="auth-view" data-view="register" style="color:var(--primary)">注册一个</a><br>' +
-      '忘记 PIN 找团队管理员在「设置 → 人员」里重设<br>' +
+      '忘记密码找团队管理员在「设置 → 人员」里重设<br>' +
       '<a href="#" data-act="auth-view" data-view="setup" style="color:var(--text-3)">第一次部署？初始化管理员</a>');
   }
 
@@ -242,12 +246,12 @@
           '<input class="input" id="st-phone" name="phone" type="tel" inputmode="numeric" maxlength="20" placeholder="11 位手机号"></div>' +
         '<div class="field"><label for="st-team">团队名称</label>' +
           '<input class="input" id="st-team" name="teamName" maxlength="30" placeholder="如：某某物业维修组（可留空）"></div>' +
-        '<div class="field"><label for="st-pin">设置 PIN</label>' +
-          '<div class="pin-wrap"><input class="input" id="st-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位" autocomplete="new-password">' +
-          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div>' +
-          '<div class="hint">' + PIN_TIP + '</div></div>' +
+        '<div class="field"><label for="st-pin">设置密码</label>' +
+          '<div class="pin-wrap"><input class="input" id="st-pin" name="pin" type="password"' + PW_ATTRS + ' placeholder="至少 ' + PW_MIN + ' 位" autocomplete="new-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div>' +
+          '<div class="hint">' + PW_TIP + '</div></div>' +
         '<div class="field"><label for="st-pin2">再输一次</label>' +
-          '<input class="input" id="st-pin2" name="pin2" type="password"' + PIN_ATTRS + ' placeholder="确认 PIN" autocomplete="new-password"></div>' +
+          '<input class="input" id="st-pin2" name="pin2" type="password"' + PW_ATTRS + ' placeholder="确认密码" autocomplete="new-password"></div>' +
         '<button class="btn btn-primary btn-block" type="submit">创建团队并进入</button>' +
       '</form>',
       '<a href="#" data-act="auth-view" data-view="login" style="color:var(--text-3)">已有账号，去登录</a>');
@@ -261,12 +265,12 @@
           '<input class="input" id="rg-name" name="name" placeholder="真实姓名，同事一眼能认出" required maxlength="20"></div>' +
         '<div class="field"><label for="rg-phone">手机号（选填）</label>' +
           '<input class="input" id="rg-phone" name="phone" type="tel" inputmode="numeric" maxlength="20" placeholder="11 位手机号"></div>' +
-        '<div class="field"><label for="rg-pin">设置 PIN</label>' +
-          '<div class="pin-wrap"><input class="input" id="rg-pin" name="pin" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位" autocomplete="new-password">' +
-          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏 PIN">显示</button></div>' +
-          '<div class="hint">' + PIN_TIP + '</div></div>' +
+        '<div class="field"><label for="rg-pin">设置密码</label>' +
+          '<div class="pin-wrap"><input class="input" id="rg-pin" name="pin" type="password"' + PW_ATTRS + ' placeholder="至少 ' + PW_MIN + ' 位" autocomplete="new-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div>' +
+          '<div class="hint">' + PW_TIP + '</div></div>' +
         '<div class="field"><label for="rg-pin2">再输一次</label>' +
-          '<input class="input" id="rg-pin2" name="pin2" type="password"' + PIN_ATTRS + ' placeholder="确认 PIN" autocomplete="new-password"></div>' +
+          '<input class="input" id="rg-pin2" name="pin2" type="password"' + PW_ATTRS + ' placeholder="确认密码" autocomplete="new-password"></div>' +
         '<button class="btn btn-primary btn-block" type="submit">注册</button>' +
       '</form>' +
       wechatButtons(),
@@ -583,7 +587,7 @@
     const wx = state.wechat || {};
     if (!wx.mp && !wx.qr) return '';
     return '<div class="wx-banner">' +
-      '<span class="grow">还没绑定微信。绑定之后，下次在微信里打开可以一键登录，不用再输 PIN。</span>' +
+      '<span class="grow">还没绑定微信。绑定之后，下次在微信里打开可以一键登录，不用再输密码。</span>' +
       '<button class="btn btn-sm btn-primary" data-act="wx-bind">去绑定</button>' +
       '<button class="btn btn-sm btn-ghost" data-act="wx-banner-hide">以后再说</button>' +
     '</div>';
@@ -1073,7 +1077,7 @@
         (offRows || '<div class="empty" style="padding:26px"><p>还没有排休</p><span>点人员行上的「排休」可以给他设几天休息</span></div>') +
       '</div>' +
       '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">' +
-        '人员就是登录账号：<b>姓名 + PIN</b> 登录，登录后自动归到这个团队。<br>' +
+        '人员就是登录账号：<b>姓名 + 密码</b> 登录，登录后自动归到这个团队。<br>' +
         '想临时加个临时工，直接「添加人员」并派单即可；对方要自己登录时，用「注册」再用团队码申请。<br>' +
         '<b>排休</b>会给这个人写上休息日，日历和派单都会拦住这段时间。<br>' +
         '要让人当<b>管理员</b>，去「设置 → 管理员」里点「设为管理员」——这里只管岗位身份，不管权限。' +
@@ -1211,7 +1215,7 @@
       '</div>';
   }
 
-  /* 转让统筹：选人 + 自己的 PIN + 手输「确认」，三重确认防误点 */
+  /* 转让统筹：选人 + 自己的密码 + 手输「确认」，三重确认防误点 */
   function openTransferOwnerModal() {
     const cands = state.profiles.filter(p => p.team_role !== 'owner' && p.active !== false);
     if (!cands.length) { toast('团队里还没有可以接手的人'); return; }
@@ -1221,7 +1225,7 @@
       '<div class="field"><label>转给谁</label><select class="select" data-field="transfer-to">' +
         cands.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '（' + esc(teamRoleLabel(p.team_role)) + '）</option>').join('') +
       '</select></div>' +
-      '<div class="field"><label>你的登录 PIN</label>' +
+      '<div class="field"><label>你的登录密码</label>' +
         '<input class="input" type="password" data-field="transfer-pin" autocomplete="current-password" placeholder="确认是你本人在操作"></div>' +
       '<div class="field"><label>手动输入「确认」两个字</label>' +
         '<input class="input" data-field="transfer-confirm" autocomplete="off" placeholder="确认">' +
@@ -1478,7 +1482,7 @@
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">表格怎么填</h3></div><div class="card-body">' +
         '<p class="hint" style="margin:0 0 8px"><b>预约单表</b>（第一行是表头，列名认这些）：<br>' +
           '日期（必填，2026-11-24 / 2026/11/24 / 11月24日 都行）、时段（上午/下午/晚上/全天）、项目、维修人员、地址、维修内容（旧表头「报修内容」也认）、预约人（旧表头「联系人」也认）、预约人电话、状态、优先级、备注</p>' +
-        '<p class="hint" style="margin:0 0 8px"><b>人员表</b>：姓名（必填）、手机号（11 位）、邮箱、身份（维修人员/预约人/统筹管理员）、PIN（留空默认 1234）</p>' +
+        '<p class="hint" style="margin:0 0 8px"><b>人员表</b>：姓名（必填）、手机号（11 位）、邮箱、身份（维修人员/预约人/统筹管理员）、密码（留空默认就用 123456，让对方登录后自己改）</p>' +
         '<p class="hint" style="margin:0">表格里出现的新项目、新维修人员会自动建档；同一个人同一天同一时段重复的行会被跳过。</p>' +
       '</div></div>' +
 
@@ -1527,7 +1531,7 @@
       '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">怎么申请（大约 1–3 天）</h3></div><div class="card-body">' +
         '<p class="hint" style="margin:0 0 8px"><b>扫码登录：</b>打开 <b>open.weixin.qq.com</b> → 管理中心 → 网站应用 → 创建应用（要企业主体，需 300 元认证费）→ 审核通过后拿到 AppID / AppSecret → 把上面的回调地址填到「授权回调域」（只填域名，如 <b>crewgo.cn</b>）。</p>' +
         '<p class="hint" style="margin:0 0 8px"><b>微信内登录：</b>需要一个<b>已认证的服务号</b> → 公众号后台 → 设置与开发 → 基本配置（拿 AppID/AppSecret）→ 公众号设置 → 功能设置 → 「网页授权域名」填同一个域名。</p>' +
-        '<p class="hint" style="margin:0">没配置也能用：姓名 + PIN 登录一直可用，微信只是更省事。域名必须已备案且能公网访问，微信回调不支持内网地址。</p>' +
+        '<p class="hint" style="margin:0">没配置也能用：姓名 + 密码登录一直可用，微信只是更省事。域名必须已备案且能公网访问，微信回调不支持内网地址。</p>' +
       '</div></div>' +
 
       '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:12px">' +
@@ -1658,15 +1662,16 @@
       '<div class="kv"><span>账号状态</span><b>' + (p.active === false ? '已停用' : '正常') + '</b></div>' +
       '<div class="kv"><span>参与排期</span><b>' + (p.role === 'tech' || p.role === 'admin' ? '是' : '否（可被指派）') + '</b></div>' +
       '</div></div>' +
-      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">修改登录 PIN</h3></div><div class="card-body">' +
+      '<div class="card" style="margin-top:14px"><div class="card-head"><h3 class="card-title">修改登录密码</h3></div><div class="card-body">' +
         '<div class="form-row">' +
-          '<div class="field"><label>原 PIN</label><input class="input" data-field="pin_old" type="password"' + PIN_ATTRS + ' placeholder="当前 PIN"></div>' +
-          '<div class="field"><label>新 PIN</label><input class="input" data-field="pin_new" type="password"' + PIN_ATTRS + ' placeholder="至少 4 位"></div>' +
+          '<div class="field"><label>原密码</label><input class="input" data-field="pin_old" type="password"' + PW_ATTRS + ' placeholder="当前密码"></div>' +
+          '<div class="field"><label>新密码</label><input class="input" data-field="pin_new" type="password"' + PW_ATTRS + ' placeholder="至少 ' + PW_MIN + ' 位"></div>' +
         '</div>' +
-        '<div class="hint" style="margin-bottom:10px">' + PIN_TIP + '</div>' +
-        '<button class="btn btn-sm btn-primary" data-act="change-pin">保存新 PIN</button>' +
+        '<div class="hint" style="margin-bottom:10px">' + PW_TIP + '</div>' +
+        '<button class="btn btn-sm btn-primary" data-act="change-pin">保存新密码</button>' +
       '</div></div>' +
       myOffCard(p) +
+      devicesCard() +
       wxBindCard(p) +
       '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center">' +
         '<div><div class="nm" style="font-weight:550">退出登录</div><div class="sub">换一个账号登录</div></div>' +
@@ -1691,13 +1696,101 @@
       '</div>';
   }
 
+  /* ---------- 登录设备（改密码后其它设备一律要重新登录） ---------- */
+  /** 把 UA 说成人话：iPhone · 微信 / Windows · Chrome */
+  function deviceLabel(ua) {
+    const s = String(ua || '');
+    if (!s) return '未知设备';
+    const os = /iPhone|iPad|iPod/i.test(s) ? 'iOS'
+      : /Android/i.test(s) ? 'Android'
+        : /Windows/i.test(s) ? 'Windows'
+          : /Macintosh|Mac OS X/i.test(s) ? 'macOS'
+            : /Linux/i.test(s) ? 'Linux' : '';
+    const app = /MicroMessenger/i.test(s) ? '微信'
+      : /Edg\//i.test(s) ? 'Edge'
+        : /OPR\/|Opera/i.test(s) ? 'Opera'
+          : /Firefox/i.test(s) ? 'Firefox'
+            : /Chrome\//i.test(s) ? 'Chrome'
+              : /Safari\//i.test(s) ? 'Safari' : '浏览器';
+    return os ? os + ' · ' + app : app;
+  }
+  /** 时间戳（服务端存的是本地时间字符串）→「3 分钟前」 */
+  function agoText(ts) {
+    if (!ts) return '';
+    const d = new Date(String(ts).replace(' ', 'T'));
+    if (isNaN(d.getTime())) return '';
+    const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (diff < 60) return '刚刚';
+    if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+    if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+    if (diff < 86400 * 2) return '昨天';
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  }
+
+  function devicesCard() {
+    const list = state.devices || [];
+    const others = list.filter(d => !d.current).length;
+    const rows = list.map(d =>
+      '<div class="list-row">' +
+        '<div class="grow"><div class="nm">' + esc(deviceLabel(d.ua)) +
+          (d.current ? ' <span class="tag tag-已确认">当前设备</span>' : '') + '</div>' +
+          '<div class="sub">' + esc(d.ip || '未知地址') +
+            (d.last_seen_at ? ' · ' + esc(agoText(d.last_seen_at)) : '') + '</div></div>' +
+        (d.current ? '' : '<button class="btn btn-sm btn-danger" data-act="device-revoke" data-id="' + esc(d.id) + '">下线</button>') +
+      '</div>').join('');
+    const body = list.length ? rows
+      : '<div class="card-body"><p class="hint" style="margin:0">还没有记录。重新登录一次就会出现。</p></div>';
+    return '<div class="card" style="margin-top:14px">' +
+      '<div class="card-head"><h3 class="card-title">登录设备（' + list.length + '）</h3>' +
+        (others ? '<button class="btn btn-sm" data-act="device-revoke-others">其它 ' + others + ' 台下线</button>' : '') + '</div>' +
+      body +
+      '<div class="card-body" style="border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px">' +
+        '<div class="sub">改密码后所有设备都要重新登录</div>' +
+        '<button class="btn btn-sm btn-danger" data-act="device-revoke-all">全部下线</button>' +
+      '</div></div>';
+  }
+
+  async function loadDevices() {
+    const { data, error } = await cloud.auth.devices();
+    if (error) return;
+    state.devices = (data && data.devices) || [];
+    state.devicesAt = Date.now();
+    if (state.view === 'settings' && state.settingsTab === 'me') render();
+  }
+
+  async function revokeDevice(id, btn) {
+    if (!id) return;
+    if (btn) { btn.disabled = true; btn.textContent = '下线中'; }
+    const { error } = await cloud.auth.revokeDevice(id);
+    if (error) { toast('下线失败：' + error.message); if (btn) { btn.disabled = false; btn.textContent = '下线'; } return; }
+    await loadDevices();
+    toast('已下线，那台设备需要重新登录');
+  }
+
+  async function revokeOtherDevices() {
+    const ok = await confirmDialog('其它设备下线', '其它设备上的登录会立刻失效，需要用密码重新登录。当前这台不受影响。');
+    if (!ok) return;
+    const { error } = await cloud.auth.revokeOtherDevices();
+    if (error) { toast('操作失败：' + error.message); return; }
+    await loadDevices();
+    toast('其它设备已全部下线');
+  }
+
+  async function revokeAllDevices() {
+    const ok = await confirmDialog('全部下线', '包括当前这台在内，所有设备都要用密码重新登录。确定吗？');
+    if (!ok) return;
+    const { error } = await cloud.auth.revokeOtherDevices(true);
+    if (error) { toast('操作失败：' + error.message); return; }
+    await doLogout();
+  }
+
   /** 微信绑定状态 */
   function wxBindCard(p) {
     const wx = state.wechat || {};
     if (!wx.mp && !wx.qr) return '';
     return '<div class="card" style="margin-top:14px"><div class="card-body" style="display:flex;justify-content:space-between;align-items:center;gap:12px">' +
       '<div><div class="nm" style="font-weight:550">微信' + (p.wx_bound ? '（已绑定）' : '') + '</div>' +
-        '<div class="sub">' + (p.wx_bound ? '在微信里打开可以一键登录' : '绑定后不用记 PIN，微信里点一下就进来') + '</div></div>' +
+        '<div class="sub">' + (p.wx_bound ? '在微信里打开可以一键登录' : '绑定后不用记密码，微信里点一下就进来') + '</div></div>' +
       (p.wx_bound
         ? '<button class="btn btn-sm btn-danger" data-act="wx-unbind">解除绑定</button>'
         : '<button class="btn btn-sm btn-primary" data-act="wx-bind">去绑定</button>') +
@@ -2648,7 +2741,11 @@
       }
       case 'sel-delete': batchDeleteAppts(); break;
       case 'sel-status': batchStatusAppts(); break;
-      case 'settings-tab': state.settingsTab = el.getAttribute('data-tab'); render(); break;
+      case 'settings-tab':
+        state.settingsTab = el.getAttribute('data-tab');
+        render();
+        if (state.settingsTab === 'me') loadDevices();
+        break;
       case 'logout': doLogout(); break;
       case 'auth-view': e.preventDefault(); state.loginMode = el.getAttribute('data-view') === 'setup' ? 'setup' : 'login'; showAuth(el.getAttribute('data-view')); break;
       case 'wx-login': startWechat(el.getAttribute('data-mode') || 'qr', false); break;
@@ -2739,6 +2836,9 @@
       case 'run-reminders': manualReminders(el); break;
       case 'enable-desktop': enableDesktop(); break;
       case 'change-pin': changeMyPin(); break;
+      case 'device-revoke': revokeDevice(el.getAttribute('data-id'), el); break;
+      case 'device-revoke-others': revokeOtherDevices(); break;
+      case 'device-revoke-all': revokeAllDevices(); break;
       case 'peek': togglePeek(el); break;
       case 'open-notifs': openNotifPanel(); break;
       case 'mark-all-read': markAllRead(); break;
@@ -2805,15 +2905,15 @@
     else if (kind === 'person') savePerson(f);
   }
 
-  /* ---------- 登录动作（本地账号：姓名 + PIN） ---------- */
+  /* ---------- 登录动作（本地账号：姓名 + 密码） ---------- */
   /* ---------- 登录 / 注册 / 团队门动作 ---------- */
   const normCodeInput = v => String(v === null || v === undefined ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
 
   async function submitLogin(f) {
     const name = (f.elements.name.value || '').trim();
-    const pin = normPin(f.elements.pin.value);
+    const pin = normPw(f.elements.pin.value);
     if (!name) { toast('请填写姓名'); return; }
-    if (!pin) { toast('请填写 PIN'); return; }
+    if (!pin) { toast('请填写密码'); return; }
 
     const btn = f.querySelector('button[type="submit"]');
     if (btn) { btn.disabled = true; btn.textContent = '登录中…'; }
@@ -2838,12 +2938,12 @@
     const name = (f.elements.name.value || '').trim();
     const phone = (f.elements.phone ? String(f.elements.phone.value || '') : '').trim();
     const teamName = (f.elements.teamName ? String(f.elements.teamName.value || '') : '').trim();
-    const pin = normPin(f.elements.pin.value);
-    const pin2 = normPin(f.elements.pin2.value);
+    const pin = normPw(f.elements.pin.value);
+    const pin2 = normPw(f.elements.pin2.value);
     if (!name) { toast('请填写姓名'); return; }
-    const pe = pinError(pin);
+    const pe = pwError(pin);
     if (pe) { toast(pe); return; }
-    if (pin !== pin2) { toast('两次输入的 PIN 不一致'); return; }
+    if (pin !== pin2) { toast('两次输入的密码不一致'); return; }
     if (phone) { const ph = phoneError(phone); if (ph) { toast(ph); return; } }
 
     const btn = f.querySelector('button[type="submit"]');
@@ -2863,12 +2963,12 @@
   async function submitRegister(f) {
     const name = (f.elements.name.value || '').trim();
     const phone = (f.elements.phone ? String(f.elements.phone.value || '') : '').trim();
-    const pin = normPin(f.elements.pin.value);
-    const pin2 = normPin(f.elements.pin2.value);
+    const pin = normPw(f.elements.pin.value);
+    const pin2 = normPw(f.elements.pin2.value);
     if (!name) { toast('请填写姓名'); return; }
-    const pe = pinError(pin);
+    const pe = pwError(pin);
     if (pe) { toast(pe); return; }
-    if (pin !== pin2) { toast('两次输入的 PIN 不一致'); return; }
+    if (pin !== pin2) { toast('两次输入的密码不一致'); return; }
     if (phone) { const ph = phoneError(phone); if (ph) { toast(ph); return; } }
 
     const btn = f.querySelector('button[type="submit"]');
@@ -2962,7 +3062,7 @@
   }
 
   async function unbindWechat() {
-    const ok = await confirmDialog('解除微信绑定', '解除后就不能用微信一键登录了，仍然可以用姓名 + PIN 登录。');
+    const ok = await confirmDialog('解除微信绑定', '解除后就不能用微信一键登录了，仍然可以用姓名 + 密码登录。');
     if (!ok) return;
     try {
       await window.__api('/api/auth/wechat/unbind', { method: 'POST', body: '{}' });
@@ -3007,7 +3107,7 @@
     const pin = pinEl ? String(pinEl.value || '').trim() : '';
     const typed = cfEl ? String(cfEl.value || '').trim() : '';
     if (!id) { toast('先选一个接手的人'); return; }
-    if (!pin) { toast('请输入你的登录 PIN'); return; }
+    if (!pin) { toast('请输入你的登录密码'); return; }
     if (typed !== '确认') { toast('请手动输入「确认」两个字（原样，不要多字）'); return; }
     try {
       await teamPost('/api/team/owner', { id, pin, confirm: typed });
@@ -3662,8 +3762,8 @@
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" value="' + esc(p ? p.phone || '' : '') + '" maxlength="20"></div>' +
         '</div>' +
         '<div class="field"><label>邮箱（选填）</label><input class="input" type="email" name="email" value="' + esc(p ? p.email || '' : '') + '" placeholder="派单和出发提醒会发到这里"></div>' +
-        '<div class="field"><label>登录 PIN' + (p ? '（留空则不修改）' : '（至少 4 位）') + '</label><input class="input" name="pin" type="text"' + PIN_ATTRS + ' value="" placeholder="' + (p ? '重设 PIN 时填这里' : '员工用姓名 + PIN 登录') + '">' +
-          '<div class="hint">' + PIN_TIP + (p ? '；留空保持原 PIN 不变' : '；留空则用默认 PIN：1234') + '</div></div>' +
+        '<div class="field"><label>登录密码' + (p ? '（留空则不修改）' : '（至少 ' + PW_MIN + ' 位）') + '</label><input class="input" name="pin" type="text"' + PW_ATTRS + ' value="" placeholder="' + (p ? '重设密码时填这里' : '员工用姓名 + 密码登录') + '">' +
+          '<div class="hint">' + PW_TIP + (p ? '；留空保持原密码不变' : '；留空则用默认密码 123456') + '</div></div>' +
         '<div class="field"><label>岗位身份</label><select class="select" name="role">' +
           (legacyAdmin ? '<option value="admin" selected disabled>管理员（旧身份）</option>' : '') +
           ['tech', 'requester'].map(r => '<option value="' + r + '"' + (!legacyAdmin && preRole === r ? ' selected' : '') + '>' + ROLE_LABEL[r] + '</option>').join('') +
@@ -3691,7 +3791,7 @@
     const email = (f.elements.email ? String(f.elements.email.value || '') : '').trim();
     if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
     const pin = (f.elements.pin ? String(f.elements.pin.value || '') : '').trim();
-    if (pin) { const pe = pinError(pin); if (pe) { toast(pe); return; } }
+    if (pin) { const pe = pwError(pin); if (pe) { toast(pe); return; } }
     const phoneRaw = (f.elements.phone.value || '').trim();
     if (phoneRaw) { const ph = phoneError(phoneRaw); if (ph) { toast(ph); return; } }
     const payload = {
@@ -3704,7 +3804,7 @@
     };
     let initPin = false;
     if (pin) payload.pin = pin;
-    else if (!id) { payload.pin = '1234'; initPin = true; }
+    else if (!id) { payload.pin = DEFAULT_PW; initPin = true; }
     if (!id) payload.user_id = null;
     const res = id
       ? await db.from('profiles').update(payload).eq('id', id).select()
@@ -3712,7 +3812,7 @@
     if (res.error) { toast('保存失败：' + (res.error.message || '')); return; }
     if (!res.data || !res.data.length) { toast('没有权限'); return; }
     closeModal(); await loadAll(); render();
-    toast(initPin ? '已添加，初始 PIN 是 1234，让对方登录后自己改' : '已保存', initPin ? 4200 : undefined);
+    toast(initPin ? '已添加，初始密码是 ' + DEFAULT_PW + '，让对方登录后自己改' : '已保存', initPin ? 4200 : undefined);
   }
 
   async function delPerson(id) {
@@ -4081,7 +4181,7 @@
     else toast('没有需要提醒的单（已提醒过，或相关人还没填 token）', 3200);
   }
 
-  /** 切换 PIN 明文/密文，含符号的 PIN 可以核对一下再提交 */
+  /** 切换密码明文/密文，含符号的密码可以核对一下再提交 */
   function togglePeek(btn) {
     const wrap = btn.closest('.pin-wrap');
     const input = wrap && wrap.querySelector('input');
@@ -4097,16 +4197,17 @@
     const oldEl = $('[data-field="pin_old"]');
     const newEl = $('[data-field="pin_new"]');
     if (!oldEl || !newEl) return;
-    const oldPin = normPin(oldEl.value);
-    const newPin = normPin(newEl.value);
-    if (!oldPin) { toast('请填写原 PIN'); return; }
-    const pe = pinError(newPin);
+    const oldPin = normPw(oldEl.value);
+    const newPin = normPw(newEl.value);
+    if (!oldPin) { toast('请填写原密码'); return; }
+    const pe = pwError(newPin);
     if (pe) { toast(pe); return; }
-    if (newPin === oldPin) { toast('新 PIN 和原 PIN 一样，换个别的吧'); return; }
-    const { error } = await cloud.auth.changePin(oldPin, newPin);
+    if (newPin === oldPin) { toast('新密码和原密码一样，换个别的吧'); return; }
+    const { error } = await cloud.auth.changePassword(oldPin, newPin);
     if (error) { toast('修改失败：' + error.message, 3600); return; }
     oldEl.value = ''; newEl.value = '';
-    toast('PIN 已修改，下次用新 PIN 登录');
+    await loadDevices();
+    toast('密码已修改，其它设备需要重新登录', 3600);
   }
 
   async function enableDesktop() {

@@ -18,16 +18,16 @@ const db = (token, q) => api('/api/db', q, token);
 
 (async () => {
   console.log('\n[1] 初始化与登录');
-  const setup = await api('/api/auth/setup', { name: '王建国', pin: '1234' });
+  const setup = await api('/api/auth/setup', { name: '王建国', password: '1234ab' });
   ok(setup.status === 200 && setup.json.token, '初始化管理员返回 token');
   ok(setup.json.user.role === 'admin', '第一个账号是 admin');
   const admin = setup.json.token;
 
-  const again = await api('/api/auth/setup', { name: '李四', pin: '1234' });
+  const again = await api('/api/auth/setup', { name: '李四', password: '1234ab' });
   ok(again.status === 409, '重复初始化被拒绝');
 
-  const badLogin = await api('/api/auth/login', { name: '王建国', pin: '0000' });
-  ok(badLogin.status === 401, 'PIN 错误被拒绝');
+  const badLogin = await api('/api/auth/login', { name: '王建国', password: '000000' });
+  ok(badLogin.status === 401, '密码错误被拒绝');
 
   const me = await api('/api/auth/me', null, admin);
   ok(me.status === 200 && me.json.user.name === '王建国', '/api/auth/me 正常');
@@ -37,14 +37,14 @@ const db = (token, q) => api('/api/db', q, token);
   ok(proj.status === 200 && proj.json.data[0].id === 1, '新增项目返回自增 id');
   ok(proj.json.data[0].active === true, '布尔字段返回 true 而不是 1');
 
-  const tech = await db(admin, { table: 'profiles', action: 'insert', values: { name: '张工', role: 'tech', phone: '13800000001', email: 'zhang@example.com', pin: '5678', color: '#0f9d76' } });
+  const tech = await db(admin, { table: 'profiles', action: 'insert', values: { name: '张工', role: 'tech', phone: '13800000001', email: 'zhang@example.com', password: '567890', color: '#0f9d76' } });
   ok(tech.status === 200 && tech.json.data[0].id, '新增维修工');
   ok(!tech.json.data[0].pin_hash, '接口不回传 pin_hash');
   const techId = tech.json.data[0].id;
 
   console.log('\n[3] 维修工登录后的权限边界');
-  const tlogin = await api('/api/auth/login', { name: '张工', pin: '5678' });
-  ok(tlogin.status === 200 && tlogin.json.user.role === 'tech', '维修工可用姓名+PIN 登录');
+  const tlogin = await api('/api/auth/login', { name: '张工', password: '567890' });
+  ok(tlogin.status === 200 && tlogin.json.user.role === 'tech', '维修工可用姓名+密码登录');
   const token = tlogin.json.token;
 
   const tProj = await db(token, { table: 'projects', action: 'insert', values: { name: '偷偷加的项目' } });
@@ -78,8 +78,8 @@ const db = (token, q) => api('/api/db', q, token);
   ok(notif.status === 200 && notif.json.data[0].owner_id === 'someone-else', '通知可写');
 
   console.log('\n[5] 越权删除与管理员操作');
-  const otherTech = await db(admin, { table: 'profiles', action: 'insert', values: { name: '李工', role: 'tech', pin: '9999' } });
-  const llogin = await api('/api/auth/login', { name: '李工', pin: '9999' });
+  const otherTech = await db(admin, { table: 'profiles', action: 'insert', values: { name: '李工', role: 'tech', password: '999999' } });
+  const llogin = await api('/api/auth/login', { name: '李工', password: '999999' });
   const ltoken = llogin.json.token;
   const delOther = await db(ltoken, { table: 'appointments', action: 'delete', filters: [{ op: 'eq', col: 'id', val: apptId }] });
   ok(delOther.status === 403, '非创建人不能删别人的预约', delOther.json);
@@ -97,26 +97,33 @@ const db = (token, q) => api('/api/db', q, token);
   const wrongTable = await db(admin, { table: 'sqlite_master', action: 'select' });
   ok(wrongTable.status === 400, '拒绝非白名单表');
 
-  console.log('\n[6] 改 PIN');
-  const chg = await api('/api/auth/pin', { oldPin: '5678', newPin: '4321' }, token);
-  ok(chg.status === 200, '本人可改 PIN');
-  ok((await api('/api/auth/login', { name: '张工', pin: '5678' })).status === 401, '旧 PIN 失效');
-  ok((await api('/api/auth/login', { name: '张工', pin: '4321' })).status === 200, '新 PIN 可登录');
+  console.log('\n[6] 改密码：当前设备换新令牌，旧密码作废');
+  const chg = await api('/api/auth/password', { oldPassword: '567890', newPassword: '432100' }, token);
+  ok(chg.status === 200, '本人可改密码');
+  ok(!!(chg.json && chg.json.token) && chg.json.token !== token, '改密码后当前设备拿到一份新令牌');
+  ok((await api('/api/auth/me', null, token)).status === 401, '旧令牌立刻失效');
+  const token2 = chg.json.token;
+  ok((await api('/api/auth/me', null, token2)).status === 200, '新令牌可继续用');
+  ok((await api('/api/auth/login', { name: '张工', password: '567890' })).status === 401, '旧密码登不进来');
+  ok((await api('/api/auth/login', { name: '张工', password: '432100' })).status === 200, '新密码可登录');
 
-  console.log('\n[6b] PIN 支持字母、数字、符号');
+  console.log('\n[6b] 密码支持字母、数字、符号');
   const strongPin = 'Crew#2026!x';
-  const chg2 = await api('/api/auth/pin', { oldPin: '4321', newPin: strongPin }, token);
-  ok(chg2.status === 200, '可设含字母和符号的 PIN');
-  ok((await api('/api/auth/login', { name: '张工', pin: strongPin })).status === 200, '字母符号 PIN 可登录');
-  const caseWrong = await api('/api/auth/login', { name: '张工', pin: 'crew#2026!x' });
-  ok(caseWrong.status === 401, 'PIN 区分大小写');
-  ok((await api('/api/auth/login', { name: '张工', pin: strongPin + '  ' })).status === 200, '首尾空格被忽略');
-  const tooShort = await api('/api/auth/pin', { oldPin: strongPin, newPin: 'ab' }, token);
-  ok(tooShort.status === 400, '过短的新 PIN 被拒绝');
-  const tooLong = await api('/api/auth/pin', { oldPin: strongPin, newPin: 'x'.repeat(33) }, token);
-  ok(tooLong.status === 400, '超长的新 PIN 被拒绝');
+  const chg2 = await api('/api/auth/password', { oldPassword: '432100', newPassword: strongPin }, token2);
+  ok(chg2.status === 200, '可设含字母和符号的密码');
+  const token3 = chg2.json.token;
+  ok((await api('/api/auth/login', { name: '张工', password: strongPin })).status === 200, '字母符号密码可登录');
+  const caseWrong = await api('/api/auth/login', { name: '张工', password: 'crew#2026!x' });
+  ok(caseWrong.status === 401, '密码区分大小写');
+  ok((await api('/api/auth/login', { name: '张工', password: strongPin + '  ' })).status === 200, '首尾空格被忽略');
+  const tooShort = await api('/api/auth/password', { oldPassword: strongPin, newPassword: 'ab' }, token3);
+  ok(tooShort.status === 400, '过短的新密码被拒绝');
+  const onlyFive = await api('/api/auth/password', { oldPassword: strongPin, newPassword: 'abcde' }, token3);
+  ok(onlyFive.status === 400, '5 位密码被拒绝（最少 6 位）');
+  const tooLong = await api('/api/auth/password', { oldPassword: strongPin, newPassword: 'x'.repeat(65) }, token3);
+  ok(tooLong.status === 400, '超长的新密码被拒绝（最多 64 位）');
   // 复原，避免影响后续人工排查
-  await api('/api/auth/pin', { oldPin: strongPin, newPin: '4321' }, token);
+  await api('/api/auth/password', { oldPassword: strongPin, newPassword: '432100' }, token3);
 
   console.log('\n[7] 静态资源');
   for (const p of ['/', '/assets/app.js', '/assets/app.css', '/assets/local-cloud.js', '/favicon.ico', '/app/crewgo/']) {

@@ -1,6 +1,9 @@
 'use strict';
 /**
- * 本地账号：姓名 + PIN。令牌 = 载荷 + HMAC 签名，密钥首次启动自动生成。
+ * 本地账号：姓名 + 密码。令牌 = 载荷 + HMAC 签名，密钥首次启动自动生成。
+ * 载荷里的 tv 是「令牌版本」，sid 是会话 id（见 sessions.js）：
+ *   - 改密码 → tv +1，旧令牌全部作废，所有设备要重新登录
+ *   - 单台下线 → 撤销那一条会话，只影响那一台
  */
 const crypto = require('node:crypto');
 const fs = require('node:fs');
@@ -60,6 +63,12 @@ function verify(token) {
   }
 }
 
-const issue = profile => sign({ pid: profile.id, exp: Date.now() + 1000 * 60 * 60 * 24 * 90 });
+const TOKEN_DAYS = 90;
+const issue = (profile, sessionId) => sign({
+  pid: profile.id,
+  tv: Number(profile.token_version || 0),
+  sid: sessionId || null,
+  exp: Date.now() + 1000 * 60 * 60 * 24 * TOKEN_DAYS
+});
 
-module.exports = { hashPin, verifyPin, sign, verify, issue };
+module.exports = { hashPin, verifyPin, sign, verify, issue, TOKEN_DAYS };

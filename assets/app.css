@@ -93,7 +93,7 @@ input,select,textarea{font-family:inherit;font-size:14px}
 .input-group{display:flex;gap:8px}
 .input-group .input{flex:1}
 .input-err{color:var(--danger);font-size:12px;margin-top:5px}
-/* PIN 输入框右侧的「显示/隐藏」，方便核对字母和符号 */
+/* 密码输入框右侧的「显示/隐藏」，方便核对字母和符号 */
 .pin-wrap{position:relative}
 .pin-wrap .input{padding-right:58px}
 .pin-eye{

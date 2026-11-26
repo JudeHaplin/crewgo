@@ -255,16 +255,16 @@ function leave(actor) {
 
 /**
  * 转让统筹管理员：全团队只有一个，不能被「设置」出来，只能由现任统筹亲手交给别人。
- * 要求双重确认：输入自己的登录 PIN + 手输「确认」两个字，防止误点。
+ * 要求双重确认：输入自己的登录密码 + 手输「确认」两个字，防止误点。
  */
 function transferOwner(actor, profileId, pin, confirmText) {
   if (!store.isOwner(actor)) throw deny('只有统筹管理员能转让');
   if (String(confirmText || '').trim() !== '确认') throw bad('请手动输入「确认」两个字再提交');
   const me = raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id) || {};
-  if (!me.pin_hash) throw bad('你还没设置登录 PIN，不能转让');
+  if (!me.pin_hash) throw bad('你还没设置登录密码，不能转让');
   const typed = String(pin || '').trim();
-  if (!typed) throw bad('请输入你的登录 PIN');
-  if (!auth.verifyPin(typed, me.pin_hash)) throw deny('PIN 不对，转让没有执行');
+  if (!typed) throw bad('请输入你的登录密码');
+  if (!auth.verifyPin(typed, me.pin_hash)) throw deny('密码不对，转让没有执行');
   const p = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(profileId), actor.teamId);
   if (!p) throw bad('成员不存在');
   if (p.id === actor.id) throw bad('你已经是统筹管理员了');
@@ -335,7 +335,7 @@ function newProfileId() {
   return 'p_' + crypto.randomBytes(5).toString('hex');
 }
 
-/** 按姓名找账号（团队内可能重名，登录时逐条验 PIN） */
+/** 按姓名找账号（团队内可能重名，登录时逐条验密码） */
 function findByName(name) {
   return raw().prepare('SELECT * FROM profiles WHERE lower(name) = lower(?) AND active = 1').all(String(name || '').trim());
 }

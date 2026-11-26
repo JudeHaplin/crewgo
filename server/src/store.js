@@ -105,7 +105,20 @@ CREATE TABLE IF NOT EXISTS profiles (
   email_code TEXT,
   email_code_exp TEXT,
   email_code_tries INTEGER NOT NULL DEFAULT 0,
-  email_code_sent_at TEXT
+  email_code_sent_at TEXT,
+  token_version INTEGER NOT NULL DEFAULT 0
+);
+
+/* 登录会话（设备）：一张表记「谁在哪台设备上登录着」，令牌里带 sid 指过来。
+   改密码会把 token_version +1 并清空这里的记录，所有设备立刻失效。 */
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  profile_id TEXT NOT NULL,
+  ua TEXT,
+  ip TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+  revoked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -238,6 +251,7 @@ CREATE INDEX IF NOT EXISTS email_logs_team_idx ON email_logs (team_id);
 CREATE UNIQUE INDEX IF NOT EXISTS time_off_key ON time_off (team_id, profile_id, off_date);
 CREATE INDEX IF NOT EXISTS time_off_date_idx ON time_off (team_id, off_date);
 CREATE INDEX IF NOT EXISTS mail_acc_team_idx ON mail_accounts (team_id, priority);
+CREATE INDEX IF NOT EXISTS sessions_profile_idx ON sessions (profile_id, revoked_at);
 CREATE INDEX IF NOT EXISTS attach_appt_idx ON attachments (appointment_id);
 CREATE INDEX IF NOT EXISTS attach_team_idx ON attachments (team_id);
 `;
@@ -370,7 +384,9 @@ const PROFILE_MIGRATIONS = [
   ['email_code', 'TEXT'],
   ['email_code_exp', 'TEXT'],
   ['email_code_tries', 'INTEGER NOT NULL DEFAULT 0'],
-  ['email_code_sent_at', 'TEXT']
+  ['email_code_sent_at', 'TEXT'],
+  // 令牌版本：改密码/重设密码时 +1，之前发出去的所有令牌立刻失效（换设备重新登录）
+  ['token_version', 'INTEGER NOT NULL DEFAULT 0']
 ];
 
 /* 预约单改动记录：谁改的、什么时候改的（详情页只给管理员看） */
@@ -612,6 +628,7 @@ function shape(table, row) {
   const out = {};
   for (const k of Object.keys(row)) {
     if (k === 'pin_hash') continue; // 任何情况下都不对外回传
+    if (k === 'token_version') continue; // 内部字段，前端用不到
     if (secrets.includes(k)) continue; // 授权码/密钥只进不出
     let v = row[k];
     if (bools.includes(k)) v = v === 1 || v === true;

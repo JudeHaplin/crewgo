@@ -149,9 +149,9 @@
         const meta = await fetchMeMeta();
         return { data: meta ? { user: meta.user } : null, error: null };
       },
-      async signIn(name, pin) {
+      async signIn(name, password) {
         try {
-          const out = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ name: name, pin: pin }) });
+          const out = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ name: name, password: password }) });
           setToken(out.token);
           cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
           return { data: out, error: null };
@@ -159,9 +159,9 @@
           return { data: null, error: { message: e.message, status: e.status } };
         }
       },
-      async setup(name, pin, phone, teamName) {
+      async setup(name, password, phone, teamName) {
         try {
-          const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ name: name, pin: pin, phone: phone, teamName: teamName }) });
+          const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ name: name, password: password, phone: phone, teamName: teamName }) });
           setToken(out.token);
           cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
           return { data: out, error: null };
@@ -169,8 +169,8 @@
           return { data: null, error: { message: e.message, status: e.status } };
         }
       },
-      register: wrap(async (name, pin, phone) => {
-        const out = await call('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, pin, phone }) });
+      register: wrap(async (name, password, phone) => {
+        const out = await call('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, password, phone }) });
         setToken(out.token);
         cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
         return out;
@@ -189,14 +189,24 @@
         return out;
       }),
       wechatUnbind: wrap(async () => call('/api/auth/wechat/unbind', { method: 'POST', body: '{}' })),
-      async changePin(oldPin, newPin) {
+      /** 改密码：成功后服务端会踢掉其它设备，当前这台换一份新令牌继续用 */
+      async changePassword(oldPassword, newPassword) {
         try {
-          await call('/api/auth/pin', { method: 'POST', body: JSON.stringify({ oldPin: oldPin, newPin: newPin }) });
-          return { error: null };
+          const out = await call('/api/auth/password', { method: 'POST', body: JSON.stringify({ oldPassword: oldPassword, newPassword: newPassword }) });
+          if (out && out.token) {
+            setToken(out.token);
+            cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
+          }
+          return { data: out, error: null };
         } catch (e) {
           return { error: { message: e.message } };
         }
       },
+      /* ---------- 登录设备 ---------- */
+      devices: wrap(async () => call('/api/auth/devices')),
+      revokeDevice: wrap(async id => call('/api/auth/devices/revoke', { method: 'POST', body: JSON.stringify({ id: id }) })),
+      /** all=true 连当前这台一起（之后要重新登录） */
+      revokeOtherDevices: wrap(async all => call('/api/auth/devices/revoke-others', { method: 'POST', body: JSON.stringify({ all: !!all }) })),
       async status() {
         try { return await call('/api/auth/status'); } catch (e) { return { initialized: true, wechat: { mp: false, qr: false } }; }
       },
@@ -207,8 +217,8 @@
         return { error: null };
       },
       // 本地版没有短信和第三方登录，保留占位以免旧代码报错
-      async sendOtp() { return { data: null, error: { message: '本地版不支持短信登录，请用姓名 + PIN' } }; },
-      async verifyOtp() { return { data: null, error: { message: '本地版不支持短信登录，请用姓名 + PIN' } }; },
+      async sendOtp() { return { data: null, error: { message: '本地版不支持短信登录，请用姓名 + 密码' } }; },
+      async verifyOtp() { return { data: null, error: { message: '本地版不支持短信登录，请用姓名 + 密码' } }; },
       async signInWithOAuth() { return { data: null, error: { message: '请用微信登录按钮' } }; }
     }
   };
