@@ -6,6 +6,20 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '../..');
+
+// 休息日固件必须用相对日期：看板「近期休息」只渲染从今天起 14 天内的休息，
+// 写死某一天的话，第二天跑测试就会失败（不是功能坏了，是日期过期了）。
+const OFF_DAY = (() => {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return {
+    ymd: d.getFullYear() + '-' + mm + '-' + dd,
+    label: (d.getMonth() + 1) + '月' + d.getDate() + '日'
+  };
+})();
+
 let pass = 0, fail = 0;
 const ok = (cond, name, extra) => {
   if (cond) { pass++; console.log('  ✓ ' + name); }
@@ -275,7 +289,7 @@ function click(listeners, act, attrs) {
         }]
       };
       if (table === 'notifications') return { data: [] };
-      if (table === 'time_off') return { data: [{ id: 1, team_id: 1, profile_id: 'p_9', off_date: '2026-11-25', part: '全天', reason: '调休' }] };
+      if (table === 'time_off') return { data: [{ id: 1, team_id: 1, profile_id: 'p_9', off_date: OFF_DAY.ymd, part: '全天', reason: '调休' }] };
       return { data: [] };
     }
     return undefined;
@@ -284,7 +298,7 @@ function click(listeners, act, attrs) {
   const page0 = full.nodes['#page'].innerHTML;
   ok(page0.indexOf('排期看板') >= 0, '主界面渲染排期看板');
   ok(page0.indexOf('休 张工') >= 0, '日历格子里直接写出「谁」在休息，不只是数量');
-  ok(page0.indexOf('近期休息') >= 0 && page0.indexOf('11月25日') >= 0, '看板有「近期休息」列表，全员可见');
+  ok(page0.indexOf('近期休息') >= 0 && page0.indexOf(OFF_DAY.label) >= 0, '看板有「近期休息」列表，全员可见');
   ok(page0.indexOf('休息（不排单）') >= 0, '日历图例里说明了休息标记');
   ok(full.nodes['#login-view'].innerHTML === '', '登录页已隐藏');
 
