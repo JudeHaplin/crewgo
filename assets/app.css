@@ -177,6 +177,8 @@ input,select,textarea{font-family:inherit;font-size:14px}
   box-shadow:0 2px 8px rgba(43,110,246,.32);
 }
 .brand-name{font-weight:650;font-size:15px;letter-spacing:.3px}
+/* 中文名后面跟英文名，英文名降一级，别跟中文名抢粗体 */
+.brand-en{font-weight:500;color:var(--text-3);letter-spacing:0;font-size:.92em}
 .mainnav{display:flex;gap:4px;flex:1}
 .mainnav a{
   padding:7px 13px;border-radius:9px;font-size:13.5px;color:var(--text-2);font-weight:500;

@@ -1,5 +1,5 @@
 /* ============================================================
-   速派 · 房屋维修预约系统
+   速派 · crewgo（维修人员预约管理系统）
    ============================================================ */
 (function () {
   'use strict';
@@ -171,7 +171,7 @@
 
   function authCard(title, desc, body, foot) {
     return '<div class="auth-card">' +
-      '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派</h1></div>' +
+      '<div class="auth-brand"><span class="brand-mark">速</span><h1>速派<span class="brand-en"> · crewgo</span></h1></div>' +
       '<p class="auth-sub">维修人员预约管理系统</p>' +
       '<h2 class="auth-title">' + esc(title) + '</h2>' +
       (desc ? '<p class="auth-desc">' + desc + '</p>' : '') +
