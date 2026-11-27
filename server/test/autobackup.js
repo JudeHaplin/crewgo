@@ -155,7 +155,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   ok(st1.json.enabled === true && st1.json.email === 'boss@example.com', '配置已生效');
 
   console.log('\n[4] 权限：只有统筹能配置和触发');
-  const member = await api('/api/auth/register', { name: '张工', pin: '123456', phone: '13800000009' });
+  // 这里只测权限：用「管理员加人 + 用户名登录」拿普通成员令牌
+  //（此时已配好发信邮箱，走注册会强制要求邮箱验证）
+  await api('/api/db', {
+    table: 'profiles', action: 'insert',
+    values: { name: '张工', role: 'tech', pin: '123456', phone: '13800000009' }
+  }, owner);
+  const member = await api('/api/auth/login', { username: '张工', pin: '123456' });
   const tech = member.json.token;
   ok((await api('/api/backup/auto', undefined, tech)).status === 403, '普通成员看不到自动备份配置');
   ok((await api('/api/backup/auto', { enabled: false }, tech)).status === 403, '普通成员改不了');

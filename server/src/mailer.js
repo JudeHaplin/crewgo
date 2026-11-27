@@ -194,6 +194,23 @@ async function send(teamId, opt) {
 }
 
 /** 只用一个指定账号发（「测试这个账号」按钮用，失败不切换，好定位问题） */
+/** 注册验证码还没团队可依：挑第一个配好可用账号的团队来发 */
+function anyTeam() {
+  const ids = raw().prepare('SELECT DISTINCT team_id FROM mail_accounts WHERE team_id IS NOT NULL').all().map(r => Number(r.team_id));
+  const teams = ids.length ? ids : raw().prepare('SELECT id FROM teams').all().map(r => Number(r.id));
+  for (const id of teams) {
+    if (configured(id) && usable(id).length) return id;
+  }
+  return null;
+}
+
+/** 不指定团队的发信（注册验证码用）；系统没有任何可用账号就明确报错 */
+async function sendAny(opt) {
+  const teamId = anyTeam();
+  if (!teamId) return { ok: false, error: '系统还没有配置可用的发信邮箱' };
+  return send(teamId, opt);
+}
+
 async function sendWith(teamId, accountId, opt) {
   const a = accountsOf(teamId).filter(x => Number(x.id) === Number(accountId))[0];
   if (!a) return { ok: false, error: '这个邮箱服务不存在' };
@@ -219,4 +236,4 @@ function rollover(teamId) {
   } catch (e) { /* ignore */ }
 }
 
-module.exports = { accountsOf, usable, configured, send, sendWith, rollover, looksExhausted, isEmail, labelOf, ready };
+module.exports = { accountsOf, usable, configured, send, sendAny, anyTeam, sendWith, rollover, looksExhausted, isEmail, labelOf, ready };

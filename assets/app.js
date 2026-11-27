@@ -225,11 +225,11 @@
   }
 
   function loginHtml(msg, ok) {
-    return authCard('登录', '姓名或 8 位用户 ID 加密码登录。',
+    return authCard('登录', '用户名或邮箱加密码登录。',
       msgHtml(msg, ok) +
       '<form data-form="login" novalidate>' +
-        '<div class="field"><label for="lg-name">姓名或用户 ID</label>' +
-          '<input class="input" id="lg-name" name="name" placeholder="姓名，或 8 位用户 ID" required maxlength="20" autocomplete="username"></div>' +
+        '<div class="field"><label for="lg-name">用户名或邮箱</label>' +
+          '<input class="input" id="lg-name" name="name" placeholder="用户名，或注册用的邮箱" required maxlength="60" autocomplete="username"></div>' +
         '<div class="field"><label for="lg-pin">密码</label>' +
           '<div class="pin-wrap"><input class="input" id="lg-pin" name="pin" type="password"' + PW_ATTRS + ' placeholder="你的登录密码" autocomplete="current-password">' +
           '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div></div>' +
@@ -245,6 +245,9 @@
     return authCard('初始化', '第一次使用，先建一个统筹账号；系统会同时给你建一个团队，之后别人凭团队码申请加入。',
       msgHtml(msg, ok) +
       '<form data-form="setup" novalidate>' +
+        '<div class="field"><label for="st-user">用户名</label>' +
+          '<input class="input" id="st-user" name="username" placeholder="登录用，2–20 位" required maxlength="20" autocomplete="username">' +
+          '<div class="hint">用户名是登录凭证，设定后无法更改</div></div>' +
         '<div class="field"><label for="st-name">你的姓名</label>' +
           '<input class="input" id="st-name" name="name" placeholder="如：王建国" required maxlength="20"></div>' +
         '<div class="field"><label for="st-phone">手机号</label>' +
@@ -263,13 +266,21 @@
   }
 
   function registerHtml(msg, ok) {
-    return authCard('注册', '注册后还需要用团队码申请加入，管理员同意了才能看到团队数据。',
+    return authCard('注册', '填用户名、姓名和密码，邮箱验证后就能用团队码申请加入。',
       msgHtml(msg, ok) +
       '<form data-form="register" novalidate>' +
+        '<div class="field"><label for="rg-user">用户名</label>' +
+          '<input class="input" id="rg-user" name="username" placeholder="登录用，2–20 位" required maxlength="20" autocomplete="username">' +
+          '<div class="hint">用户名是登录凭证，设定后无法更改</div></div>' +
         '<div class="field"><label for="rg-name">姓名</label>' +
-          '<input class="input" id="rg-name" name="name" placeholder="真实姓名，同事一眼能认出" required maxlength="20"></div>' +
+          '<input class="input" id="rg-name" name="name" placeholder="真实姓名，同事看到的是这个" required maxlength="20"></div>' +
         '<div class="field"><label for="rg-phone">手机号（选填）</label>' +
           '<input class="input" id="rg-phone" name="phone" type="tel" inputmode="numeric" maxlength="20" placeholder="11 位手机号"></div>' +
+        '<div class="field"><label for="rg-email">邮箱</label>' +
+          '<input class="input" id="rg-email" name="email" type="email" maxlength="60" placeholder="收注册验证码" autocomplete="email">' +
+          '<button type="button" class="btn btn-sm" data-act="signup-send" style="margin-top:8px">发送验证码</button></div>' +
+        '<div class="field"><label for="rg-code">验证码</label>' +
+          '<input class="input" id="rg-code" name="code" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocomplete="one-time-code"></div>' +
         '<div class="field"><label for="rg-pin">设置密码</label>' +
           '<div class="pin-wrap"><input class="input" id="rg-pin" name="pin" type="password"' + PW_ATTRS + ' placeholder="至少 ' + PW_MIN + ' 位" autocomplete="new-password">' +
           '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div>' +
@@ -282,7 +293,7 @@
       '已经有账号？<a href="#" data-act="auth-view" data-view="login" style="color:var(--primary)">去登录</a>');
   }
 
-  /** 找回密码：第一步发验证码（认姓名或 8 位 ID），第二步填码 + 新密码 */
+  /** 找回密码：第一步发验证码（认用户名或邮箱），第二步填码 + 新密码 */
   function recoverHtml(msg, ok) {
     const r = state.recover || {};
     const step2 = r.sent
@@ -300,8 +311,8 @@
     return authCard('找回密码', '验证码发到这个账号已验证的邮箱。',
       msgHtml(msg, ok) +
       '<form data-form="recover" novalidate>' +
-        '<div class="field"><label for="rc-account">姓名或用户 ID</label>' +
-          '<input class="input" id="rc-account" name="account" value="' + esc(r.account || '') + '" placeholder="姓名，或 8 位用户 ID" required maxlength="20" autocomplete="username"></div>' +
+        '<div class="field"><label for="rc-account">用户名或邮箱</label>' +
+          '<input class="input" id="rc-account" name="account" value="' + esc(r.account || '') + '" placeholder="用户名，或注册用的邮箱" required maxlength="60" autocomplete="username"></div>' +
         step2 +
       '</form>',
       '<a href="#" data-act="auth-view" data-view="login" style="color:var(--primary)">想起来了，去登录</a>');
@@ -1073,7 +1084,7 @@
           (p.wx_bound ? ' <span class="tag tag-已确认">微信</span>' : '') +
           (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') +
           (offs.length ? ' <span class="tag tag-待确认">休 ' + offs.length + ' 天</span>' : '') + '</div>' +
-          '<div class="sub">ID ' + esc(p.code || '—') + ' · ' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) +
+          '<div class="sub">@' + esc(p.username || '—') + ' · ID ' + esc(p.code || '—') + ' · ' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) +
             (offs.length ? ' · 最近休息 ' + esc(offs[0].off_date.slice(5)) + (offs[0].part && offs[0].part !== '全天' ? ' ' + esc(offs[0].part) : '') : '') + '</div></div>' +
         ((isAdmin() || p.id === state.profile.id)
           ? '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">排休</button>' : '') +
@@ -1299,7 +1310,7 @@
         '<div class="grow"><div class="nm">' + esc(p.name) + (me ? ' <span class="tag tag-已确认">我</span>' : '') +
           ' <span class="tag ' + (p.team_role === 'owner' ? 'tag-加急' : (p.team_role === 'admin' ? 'tag-已确认' : 'tag-待确认')) + '">' +
           esc(teamRoleLabel(p.team_role)) + '</span></div>' +
-          '<div class="sub">ID ' + esc(p.code || '—') + ' · ' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
+          '<div class="sub">@' + esc(p.username || '—') + ' · ID ' + esc(p.code || '—') + ' · ' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
         (admin && !me && p.team_role !== 'owner'
           ? '<button class="btn btn-sm btn-danger" data-act="member-remove" data-id="' + esc(p.id) + '">移出</button>' : '') +
       '</div>';
@@ -1690,7 +1701,8 @@
         '</div></div>' +
         '<button class="btn btn-primary btn-sm" type="submit">保存</button>' +
       '</form>' +
-      '<div class="kv" style="margin-top:18px"><span>用户 ID</span><b style="font-variant-numeric:tabular-nums;letter-spacing:1.5px">' + esc(p.code || '—') + '</b></div>' +
+      '<div class="kv" style="margin-top:18px"><span>用户名（登录用，不可更改）</span><b>' + esc(p.username || '—') + '</b></div>' +
+      '<div class="kv"><span>用户 ID</span><b style="font-variant-numeric:tabular-nums;letter-spacing:1.5px">' + esc(p.code || '—') + '</b></div>' +
       '<div class="kv"><span>团队身份</span><b>' + esc(teamRoleLabel(p.team_role)) + '</b></div>' +
       '<div class="kv"><span>岗位身份</span><b>' + esc(ROLE_LABEL[p.role] || p.role) + '</b></div>' +
       '<div class="kv"><span>账号状态</span><b>' + (p.active === false ? '已停用' : '正常') + '</b></div>' +
@@ -2871,6 +2883,7 @@
       case 'run-reminders': manualReminders(el); break;
       case 'enable-desktop': enableDesktop(); break;
       case 'recover-send': submitRecoverSend(); break;
+      case 'signup-send': sendSignupCode(); break;
       case 'change-pin': changeMyPin(); break;
       case 'device-revoke': revokeDevice(el.getAttribute('data-id'), el); break;
       case 'device-revoke-others': revokeOtherDevices(); break;
@@ -2951,7 +2964,7 @@
     const f = $('form[data-form="recover"]');
     if (!f) return;
     const account = (f.elements.account.value || '').trim();
-    if (!account) { toast('请填写姓名或用户 ID'); return; }
+    if (!account) { toast('请填写用户名或邮箱'); return; }
     const btn = $('[data-act="recover-send"]');
     if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
     const { data, error } = await cloud.auth.recoverStart(account);
@@ -2970,7 +2983,7 @@
     const code = f.elements.code ? (f.elements.code.value || '').trim() : '';
     const pw = f.elements.pin ? normPw(f.elements.pin.value) : '';
     const pw2 = f.elements.pin2 ? normPw(f.elements.pin2.value) : '';
-    if (!account) { toast('请填写姓名或用户 ID'); return; }
+    if (!account) { toast('请填写用户名或邮箱'); return; }
     if (!code) { toast('请先点「发送验证码」，再填收到的 6 位数字'); return; }
     const pe = pwError(pw);
     if (pe) { toast(pe); return; }
@@ -2991,7 +3004,7 @@
   async function submitLogin(f) {
     const name = (f.elements.name.value || '').trim();
     const pin = normPw(f.elements.pin.value);
-    if (!name) { toast('请填写姓名或用户 ID'); return; }
+    if (!name) { toast('请填写用户名或邮箱'); return; }
     if (!pin) { toast('请填写密码'); return; }
 
     const btn = f.querySelector('button[type="submit"]');
@@ -3015,10 +3028,13 @@
 
   async function submitSetup(f) {
     const name = (f.elements.name.value || '').trim();
+    const username = (f.elements.username ? String(f.elements.username.value || '') : '').trim();
     const phone = (f.elements.phone ? String(f.elements.phone.value || '') : '').trim();
     const teamName = (f.elements.teamName ? String(f.elements.teamName.value || '') : '').trim();
     const pin = normPw(f.elements.pin.value);
     const pin2 = normPw(f.elements.pin2.value);
+    if (!username) { toast('请填写用户名'); return; }
+    if (username.length < 2 || username.length > 20) { toast('用户名 2–20 个字符'); return; }
     if (!name) { toast('请填写姓名'); return; }
     const pe = pwError(pin);
     if (pe) { toast(pe); return; }
@@ -3027,7 +3043,7 @@
 
     const btn = f.querySelector('button[type="submit"]');
     if (btn) { btn.disabled = true; btn.textContent = '创建中…'; }
-    const { data, error } = await cloud.auth.setup(name, pin, phone, teamName);
+    const { data, error } = await cloud.auth.setup(name, pin, phone, teamName, username);
     if (error) {
       if (btn) { btn.disabled = false; btn.textContent = '创建团队并进入'; }
       toast('创建失败：' + (error.message || '请重试'), 4200);
@@ -3040,26 +3056,48 @@
   }
 
   async function submitRegister(f) {
+    const username = (f.elements.username ? String(f.elements.username.value || '') : '').trim();
     const name = (f.elements.name.value || '').trim();
     const phone = (f.elements.phone ? String(f.elements.phone.value || '') : '').trim();
+    const email = (f.elements.email ? String(f.elements.email.value || '') : '').trim();
+    const code = (f.elements.code ? String(f.elements.code.value || '') : '').trim();
     const pin = normPw(f.elements.pin.value);
     const pin2 = normPw(f.elements.pin2.value);
+    if (!username) { toast('请填写用户名'); return; }
+    if (username.length < 2 || username.length > 20) { toast('用户名 2–20 个字符'); return; }
     if (!name) { toast('请填写姓名'); return; }
     const pe = pwError(pin);
     if (pe) { toast(pe); return; }
     if (pin !== pin2) { toast('两次输入的密码不一致'); return; }
     if (phone) { const ph = phoneError(phone); if (ph) { toast(ph); return; } }
+    if (email && !isEmail(email)) { toast('邮箱格式不对：' + email); return; }
+    if (email && !code) { toast('请填邮箱收到的 6 位验证码'); return; }
 
     const btn = f.querySelector('button[type="submit"]');
     if (btn) { btn.disabled = true; btn.textContent = '注册中…'; }
-    const { error } = await cloud.auth.register(name, pin, phone);
+    const { error } = await cloud.auth.register({ username: username, name: name, password: pin, phone: phone, email: email, code: code });
     if (error) {
       if (btn) { btn.disabled = false; btn.textContent = '注册'; }
       toast('注册失败：' + (error.message || '请重试'), 4200);
       return;
     }
     await boot();
-    toast('注册成功，接着用团队码申请加入', 3600);
+    toast('注册成功，用户名 ' + username + '，接着用团队码申请加入', 5200);
+  }
+
+  /** 注册时给填的邮箱发验证码 */
+  async function sendSignupCode() {
+    const f = $('form[data-form="register"]');
+    if (!f) return;
+    const email = (f.elements.email ? String(f.elements.email.value || '') : '').trim();
+    if (!email) { toast('先填邮箱'); return; }
+    if (!isEmail(email)) { toast('邮箱格式不对：' + email); return; }
+    const btn = $('[data-act="signup-send"]');
+    if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
+    const { error } = await cloud.auth.signupCode(email);
+    if (btn) { btn.disabled = false; btn.textContent = '发送验证码'; }
+    if (error) { toast('发送失败：' + (error.message || '请重试'), 4200); return; }
+    toast('验证码已发到 ' + email + '，10 分钟内有效', 4200);
   }
 
   /** 微信账号补资料：姓名 + 手机号，必须填完 */
@@ -3873,7 +3911,13 @@
     const preRole = p && p.role === 'requester' ? 'requester' : 'tech';
     openModal(modalShell(p ? '编辑人员' : '添加人员',
       '<form data-form="person" data-id="' + (p ? esc(p.id) : '') + '">' +
-        (p ? '<div class="field"><label>用户 ID</label><input class="input" value="' + esc(p.code || '') + '" readonly></div>' : '') +
+        (p
+          ? '<div class="form-row">' +
+              '<div class="field"><label>用户名（不可更改）</label><input class="input" value="' + esc(p.username || '') + '" readonly></div>' +
+              '<div class="field"><label>用户 ID</label><input class="input" value="' + esc(p.code || '') + '" readonly></div>' +
+            '</div>'
+          : '<div class="field"><label>用户名（选填）</label><input class="input" name="username" maxlength="20" placeholder="留空则用姓名">' +
+            '<div class="hint">登录凭证，设定后无法更改</div></div>') +
         '<div class="form-row">' +
           '<div class="field"><label>姓名</label><input class="input" name="name" value="' + esc(p ? p.name : '') + '" required maxlength="20"></div>' +
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" value="' + esc(p ? p.phone || '' : '') + '" maxlength="20"></div>' +
@@ -3919,6 +3963,11 @@
       color: f.elements.color.value,
       active: f.elements.active.checked
     };
+    // 只有新建时才能定用户名（编辑时服务端也不允许改）
+    if (!id && f.elements.username) {
+      const u = String(f.elements.username.value || '').trim();
+      if (u) payload.username = u;
+    }
     let initPin = false;
     if (pin) payload.pin = pin;
     else if (!id) { payload.pin = DEFAULT_PW; initPin = true; }

@@ -142,7 +142,7 @@ function requireAdmin(actor) {
 function listRequests(actor) {
   requireAdmin(actor);
   return raw().prepare(
-    "SELECT r.id, r.profile_id, r.message, r.created_at, p.name, p.code, p.phone, p.email, p.role, p.created_at AS profile_created_at, " +
+    "SELECT r.id, r.profile_id, r.message, r.created_at, p.name, p.username, p.code, p.phone, p.email, p.role, p.created_at AS profile_created_at, " +
     "CASE WHEN p.team_id IS NULL THEN 0 ELSE 1 END AS already_in_team " +
     "FROM team_requests r JOIN profiles p ON p.id = r.profile_id " +
     "WHERE r.team_id = ? AND r.status = 'pending' ORDER BY r.id ASC"
@@ -190,7 +190,7 @@ function decide(actor, requestId, approve) {
 function members(actor) {
   if (!actor.teamId) throw deny('请先加入团队');
   return raw().prepare(
-    'SELECT id, name, code, phone, email, role, team_role, active, color, avatar, created_at, last_login_at ' +
+    'SELECT id, name, username, code, phone, email, role, team_role, active, color, avatar, created_at, last_login_at ' +
     'FROM profiles WHERE team_id = ? ORDER BY CASE team_role WHEN \'owner\' THEN 0 WHEN \'admin\' THEN 1 ELSE 2 END, created_at'
   ).all(actor.teamId).map(r => Object.assign({}, r, {
     role_label: ROLE_LABEL[r.team_role] || r.team_role,
@@ -315,25 +315,39 @@ function findByName(name) {
   return raw().prepare('SELECT * FROM profiles WHERE lower(name) = lower(?) AND active = 1').all(String(name || '').trim());
 }
 
-/** 按 8 位用户 ID 找账号（全局唯一，登录 / 找回密码都能用它精确定位到人） */
+/** 按 8 位用户 ID 找账号（只用于记录与显示，不再用于登录） */
 function findByCode(code) {
   const c = String(code || '').trim();
   if (!store.MEMBER_CODE_RE.test(c)) return null;
   return raw().prepare('SELECT * FROM profiles WHERE code = ? AND active = 1').get(c) || null;
 }
 
-/** 兜底查人：先按 8 位 ID，再按姓名（同名多于一个就报错，让用户改用 ID） */
+/** 按用户名找（大小写不敏感，只算未停用的） */
+function findByUsername(u) {
+  const s = String(u || '').trim();
+  if (!s) return null;
+  return raw().prepare('SELECT * FROM profiles WHERE lower(username) = lower(?) AND active = 1').get(s) || null;
+}
+
+/** 按邮箱找：同一个邮箱可能绑了多个账号（老数据），交给密码去区分 */
+function findByEmail(email) {
+  const s = String(email || '').trim();
+  if (!s) return [];
+  return raw().prepare('SELECT * FROM profiles WHERE lower(email) = lower(?) AND active = 1').all(s);
+}
+
+/** 登录 / 找回密码的账号解析：含 @ 当邮箱，否则当用户名 */
 function lookup(ident) {
   const key = String(ident || '').trim();
-  if (!key) return { error: '请输入姓名或 8 位用户 ID' };
-  if (store.MEMBER_CODE_RE.test(key)) {
-    const row = findByCode(key);
-    return row ? { row } : { error: '没有这个用户 ID：' + key };
+  if (!key) return { error: '请输入用户名或邮箱' };
+  if (key.includes('@')) {
+    const rows = findByEmail(key);
+    if (!rows.length) return { error: '没找到「' + key + '」对应的账号' };
+    if (rows.length > 1) return { error: '这个邮箱绑定了 ' + rows.length + ' 个账号，请改用用户名' };
+    return { row: rows[0], viaEmail: true };
   }
-  const rows = findByName(key);
-  if (!rows.length) return { error: '没找到「' + key + '」这个账号，换 8 位用户 ID 再试' };
-  if (rows.length > 1) return { error: '有 ' + rows.length + ' 位同名的同事，请改用 8 位用户 ID' };
-  return { row: rows[0] };
+  const row = findByUsername(key);
+  return row ? { row } : { error: '没找到用户名「' + key + '」' };
 }
 
 /**
@@ -408,7 +422,7 @@ function stats(teamId) {
 }
 
 module.exports = {
-  ROLE_LABEL, TEAM_ROLES, ROLE_VALUES, newProfileId, findByName, findByCode, lookup, migrateMember,
+  ROLE_LABEL, TEAM_ROLES, ROLE_VALUES, newProfileId, findByName, findByCode, findByUsername, findByEmail, lookup, migrateMember,
   teamById, teamByCode, publicTeam, myRequest, createTeam, joinByCode, cancelRequest,
   listRequests, decide, members, setRole, removeMember, leave, transferOwner,
   rename, setAllowDirect, resetCode, dissolve, stats

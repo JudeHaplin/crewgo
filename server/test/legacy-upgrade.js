@@ -46,8 +46,9 @@ const db = (token, q) => api('/api/db', q, token);
   const gone = await api('/api/auth/login', { name: '已离职的张工', pin: '1111' });
   ok(gone.status === 401, '已停用的账号升级后仍然不能登录');
   ok(/^\d{8}$/.test(login.json.user.code), '老账号升级后自动补了 8 位用户 ID：' + login.json.user.code);
-  const byCode = await api('/api/auth/login', { account: login.json.user.code, pin: '1234' });
-  ok(byCode.status === 200 && byCode.json.user.id === login.json.user.id, '补到的 ID 可以直接用来登录');
+  ok(login.json.user.username === '王建国', '老账号升级后用户名沿用原姓名：' + login.json.user.username);
+  const byName = await api('/api/auth/login', { username: login.json.user.username, pin: '1234' });
+  ok(byName.status === 200 && byName.json.user.id === login.json.user.id, '用用户名可以直接登录');
 
   console.log('\n[3] 老数据一条不少');
   const appts = await db(admin, { table: 'appointments', action: 'select' });
@@ -85,6 +86,19 @@ const db = (token, q) => api('/api/db', q, token);
   }, admin);
   ok(clash.status === 409, '冲突检测对新老数据都生效（返回 409）', clash.status);
 
+  // 老库里的 SMTP 是假地址（smtp.qq.com）：系统会要求注册时验证邮箱但根本发不出信。
+  // 这里把发信配置停掉，验证「一个可用发信账号都没有时，注册降级放行」的路径
+  await api('/api/db', {
+    table: 'settings', action: 'update',
+    values: { smtp_host: null, smtp_user: null, smtp_pass: null, mail_mode: 'emailjs' }
+  }, admin);
+  const accs = await api('/api/db', { table: 'mail_accounts', action: 'select' }, admin);
+  for (const a of (accs.json && accs.json.data) || []) {
+    await api('/api/db', {
+      table: 'mail_accounts', action: 'update',
+      values: { enabled: false }, filters: [{ op: 'eq', col: 'id', val: a.id }]
+    }, admin);
+  }
   const reg = await api('/api/auth/register', { name: '新来的小李', pin: '888888', phone: '13800000088' });
   ok(reg.status === 200 && reg.json.user.team_id === null, '老库升级后也能自助注册');
   const join = await api('/api/team/join', { code: login.json.team.code }, reg.json.token);

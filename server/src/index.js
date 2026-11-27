@@ -216,8 +216,9 @@ const backupRunAt = new Map();
 
 const publicProfile = row => ({
   id: row.id,
-  code: row.code || null, // 8 位用户 ID：建号自动分配、不可更改，登录与找回密码都能用它
-  name: row.name,
+  username: row.username || null, // 登录凭证，全局唯一、设定后不可更改
+  code: row.code || null,         // 8 位用户 ID：只用于记录与显示，不用于登录
+  name: row.name,                 // 姓名：同事在派单、排期、通知里看到的就是它
   role: row.role,
   email: row.email,
   email_pending: row.email_pending || null,
@@ -290,9 +291,16 @@ async function handleApi(req, res, pathname, url) {
     if (Number(row.n) > 0) return fail(res, 409, '系统已经初始化过了，请直接登录，或用团队码加入');
     const body = await readBody(req);
     const name = String(body.name || '').trim();
+    // 用户名是登录凭证；老页面只传 name 时用它兼任用户名（升级与老缓存都还能用）
+    const username = String(body.username || name).trim();
     // 前端历史上传 pin，现在传 password；两个都收，老缓存页面也还能用
     const password = normPassword(body.password != null ? body.password : body.pin);
     if (!name) return fail(res, 400, '请填写姓名');
+    const ue = store.usernameError(username);
+    if (ue) return fail(res, 400, ue);
+    if (store.raw().prepare('SELECT 1 AS x FROM profiles WHERE lower(username) = lower(?)').get(username)) {
+      return fail(res, 409, '这个用户名已经被用了，换一个');
+    }
     const pe = passwordError(password);
     if (pe) return fail(res, 400, pe);
     const phoneRaw = String(body.phone || '').trim();
@@ -302,21 +310,64 @@ async function handleApi(req, res, pathname, url) {
     }
     const id = 'p_' + Math.random().toString(36).slice(2, 10);
     store.raw().prepare(
-      "INSERT INTO profiles (id, name, code, phone, role, color, pin_hash, active, user_id) VALUES (?,?,?,?,?,?,?,1,?)"
-    ).run(id, name, store.newMemberCode(), phoneRaw ? store.normPhone(phoneRaw) : null, 'admin', '#2b6ef6', auth.hashPin(password), id);
+      "INSERT INTO profiles (id, username, name, code, phone, role, color, pin_hash, active, user_id) VALUES (?,?,?,?,?,?,?,?,1,?)"
+    ).run(id, username, name, store.newMemberCode(), phoneRaw ? store.normPhone(phoneRaw) : null, 'admin', '#2b6ef6', auth.hashPin(password), id);
     const prof = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
     const created = team.createTeam(prof, String(body.teamName || '').trim() || (name + '的团队'));
-    log('初始化完成：' + name + '（ID ' + prof.code + '），团队「' + created.team.name + '」码 ' + created.code);
+    log('初始化完成：' + name + '（用户名 ' + username + '，ID ' + prof.code + '），团队「' + created.team.name + '」码 ' + created.code);
     const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
     return send(res, 200, sessionOf(fresh, req));
+  }
+
+  /* 注册验证码：还没建号，所以不需要登录；发到填的邮箱，注册时带回来校验 */
+  if (pathname === '/api/auth/register/code' && req.method === 'POST') {
+    if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
+    const body = await readBody(req);
+    const email = String(body.email || '').trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail(res, 400, '邮箱格式不对：' + (email || '（空）'));
+    const key = email.toLowerCase();
+    const rec = store.raw().prepare('SELECT * FROM signup_codes WHERE email = ?').get(key);
+    if (rec) {
+      const age = Date.now() - timeMs(rec.sent_at);
+      if (age >= 0 && age < 60 * 1000) {
+        return fail(res, 429, '刚发过一封，' + Math.ceil((60 * 1000 - age) / 1000) + ' 秒后可以再发');
+      }
+    }
+    const code = String(crypto.randomInt(100000, 1000000));
+    const sent = await mailer.sendAny({
+      to: email,
+      toName: '',
+      owner: 'signup',
+      kind: 'signup',
+      subject: '【速派】注册验证码 ' + code + '（10 分钟内有效）',
+      html: '<div style="font-family:-apple-system,Segoe UI,PingFang SC,sans-serif;font-size:14px;line-height:1.9;color:#111827">' +
+        '<p>你好，这是你在「速派」注册账号的验证码，<b>10 分钟内有效</b>：</p>' +
+        '<p style="font-size:30px;font-weight:700;letter-spacing:6px;color:#2b6ef6;margin:14px 0"><b>' + code + '</b></p>' +
+        '<p style="color:#6b7280;font-size:13px">如果这不是你本人操作，忽略这封邮件即可，不会有账号被创建。</p></div>'
+    });
+    if (!sent.ok) {
+      return fail(res, 502, '验证码没发出去：' + (sent.error || '未知原因') +
+        '。让管理员先在「设置 → 通知 → 邮箱服务」里配一个发信邮箱。');
+    }
+    store.raw().prepare(
+      'INSERT INTO signup_codes (email, code, exp, tries, sent_at) VALUES (?,?,?,0,?) ' +
+      'ON CONFLICT(email) DO UPDATE SET code = excluded.code, exp = excluded.exp, tries = 0, sent_at = excluded.sent_at'
+    ).run(key, code, String(Date.now() + 10 * 60 * 1000), String(Date.now()));
+    log('注册验证码已发送（' + maskEmail(email) + '）');
+    return send(res, 200, { ok: true, ttl: 600 });
   }
 
   /* 自助注册：此时还看不到任何团队数据，要凭团队码申请并被同意 */
   if (pathname === '/api/auth/register' && req.method === 'POST') {
     if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
     const body = await readBody(req);
+    const username = String(body.username || '').trim() || String(body.name || '').trim();
     const name = String(body.name || '').trim();
+    const email = String(body.email || '').trim();
+    const mailCode = String(body.code || '').replace(/\s/g, '');
     const password = normPassword(body.password != null ? body.password : body.pin);
+    const ue = store.usernameError(username);
+    if (ue) return fail(res, 400, ue);
     if (!name) return fail(res, 400, '请填写姓名');
     if (name.length > 20) return fail(res, 400, '姓名最多 20 个字');
     const pe = passwordError(password);
@@ -326,39 +377,74 @@ async function handleApi(req, res, pathname, url) {
       const phe = store.phoneError(phoneRaw);
       if (phe) return fail(res, 400, phe);
     }
+    // 用户名就是登录凭证，全局唯一（大小写不敏感）
+    if (store.raw().prepare('SELECT 1 AS x FROM profiles WHERE lower(username) = lower(?)').get(username)) {
+      return fail(res, 409, '这个用户名已经被用了，换一个');
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return fail(res, 400, '邮箱格式不对：' + email);
+
+    // 注册要验证邮箱。系统一个可用发信账号都没有时（刚装好还没配）降级为不强制，
+    // 否则第一个注册的人根本进不来；配好发信邮箱后一律强制。
+    const wantVerify = !!mailer.anyTeam();
+    if (wantVerify) {
+      if (!email) return fail(res, 400, '请填写邮箱，注册要收验证码');
+      if (!/^\d{6}$/.test(mailCode)) return fail(res, 400, '请填写邮箱收到的 6 位验证码');
+      const rec = store.raw().prepare('SELECT * FROM signup_codes WHERE email = ?').get(email.toLowerCase());
+      if (!rec) return fail(res, 400, '还没有给这个邮箱发过验证码');
+      if (!(timeMs(rec.exp) > Date.now())) return fail(res, 400, '验证码过期了，重新发一次');
+      if (Number(rec.tries || 0) >= 5) return fail(res, 429, '试错次数太多，重新发验证码');
+      if (String(rec.code) !== mailCode) {
+        store.raw().prepare('UPDATE signup_codes SET tries = tries + 1 WHERE email = ?').run(email.toLowerCase());
+        markFail(ip);
+        return fail(res, 400, '验证码不对');
+      }
+    }
+
     // 姓名不再唯一：同名的两个人各建各的账号、各拿一个 8 位 ID，数据互不相干。
-    // （以前同名的待审账号会被拦下来，或者入团时被自动合并到别人名下，都是坑。）
     const id = team.newProfileId();
-    const code = store.newMemberCode();
-    store.raw().prepare(
-      "INSERT INTO profiles (id, name, code, phone, role, color, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,1,?,'member',0)"
-    ).run(id, name, code, phoneRaw ? store.normPhone(phoneRaw) : null, 'tech', '#2b6ef6', auth.hashPin(password), id);
+    const memberCode = store.newMemberCode();
+    store.raw().exec('BEGIN');
+    try {
+      store.raw().prepare(
+        "INSERT INTO profiles (id, username, name, code, phone, email, email_verified_at, role, color, pin_hash, active, user_id, team_role, need_profile) " +
+        "VALUES (?,?,?,?,?,?,?,'tech','#2b6ef6',?,1,?,'member',0)"
+      ).run(id, username, name, memberCode,
+        phoneRaw ? store.normPhone(phoneRaw) : null,
+        email || null,
+        wantVerify ? store.localStamp() : null,
+        auth.hashPin(password), id);
+      if (wantVerify) store.raw().prepare('DELETE FROM signup_codes WHERE email = ?').run(email.toLowerCase());
+      store.raw().exec('COMMIT');
+    } catch (e) {
+      store.raw().exec('ROLLBACK');
+      throw e;
+    }
     const row = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
-    log('新账号注册（待加入团队）：' + name + '（ID ' + code + '）');
-    return send(res, 200, Object.assign(sessionOf(row, req), { registered: true, code: code }));
+    log('新账号注册（待加入团队）：' + name + '（用户名 ' + username + '，ID ' + memberCode + '）');
+    return send(res, 200, Object.assign(sessionOf(row, req), {
+      registered: true, code: memberCode, username: username, email_verified: wantVerify
+    }));
   }
 
   if (pathname === '/api/auth/login' && req.method === 'POST') {
     if (tooMany(ip)) return fail(res, 429, '尝试次数过多，请 1 分钟后再试');
     const body = await readBody(req);
-    const ident = String(body.account || body.name || '').trim();
+    const ident = String(body.account || body.username || body.name || '').trim();
     const password = normPassword(body.password != null ? body.password : body.pin);
-    if (!ident || !password) return fail(res, 400, '请输入姓名（或用户 ID）和密码');
-    // 8 位数字按「用户 ID」处理：重名的人各有一个 ID，用它登录永远不会认错人
+    if (!ident || !password) return fail(res, 400, '请输入用户名（或邮箱）和密码');
+    // 用户名是唯一登录凭证（全局唯一，不会认错人）；也允许填邮箱
     let hit = null;
-    if (store.MEMBER_CODE_RE.test(ident)) {
-      const row = team.findByCode(ident);
-      if (row && auth.verifyPin(password, row.pin_hash)) hit = row;
-    } else {
-      const hits = team.findByName(ident).filter(r => auth.verifyPin(password, r.pin_hash));
-      if (hits.length > 1) {
-        return fail(res, 409, '有 ' + hits.length + ' 个同名同密码的账号，请改用 8 位用户 ID 登录（ID 在「我的资料」里能看到）');
-      }
+    if (ident.includes('@')) {
+      const hits = team.findByEmail(ident).filter(r => auth.verifyPin(password, r.pin_hash));
+      if (hits.length > 1) return fail(res, 409, '这个邮箱绑定了多个账号，请改用用户名登录');
       hit = hits[0] || null;
+    } else {
+      const row = team.findByUsername(ident);
+      if (row && auth.verifyPin(password, row.pin_hash)) hit = row;
     }
     if (!hit) {
       markFail(ip);
-      return fail(res, 401, '姓名/ID 或密码不对。忘记密码可以在登录页点「忘记密码」用邮箱找回，或让管理员重设');
+      return fail(res, 401, '用户名/邮箱或密码不对。忘记密码可以在登录页点「忘记密码」用邮箱找回，或让管理员重设');
     }
     attempts.delete(ip);
     const patch = ["last_login_at = datetime('now','localtime')"];
@@ -381,12 +467,14 @@ async function handleApi(req, res, pathname, url) {
     if (!row.email || !row.email_verified_at) {
       return fail(res, 400, '这个账号还没绑定并验证邮箱，没法自己找回。让管理员在「设置 → 人员 → 编辑」里重设一个密码就行。');
     }
-    if (!mailer.configured(row.team_id)) {
-      return fail(res, 400, '团队还没配发信邮箱，验证码发不出去。让统筹管理员去「设置 → 通知 → 邮箱服务」配一个。');
+    // 还没入团的账号没有 team_id，就从任意一个配好发信账号的团队发
+    const mailTeam = row.team_id || mailer.anyTeam();
+    if (!mailTeam) {
+      return fail(res, 400, '系统还没配发信邮箱，验证码发不出去。让统筹管理员去「设置 → 通知 → 邮箱服务」配一个。');
     }
     const code = String(crypto.randomInt(100000, 1000000));
     const nm = String(row.name || '').replace(/[<>&"]/g, '');
-    const sendRes = await mailer.send(row.team_id, {
+    const sendRes = await mailer.send(mailTeam, {
       to: row.email,
       toName: row.name || '',
       owner: row.id,
@@ -394,7 +482,7 @@ async function handleApi(req, res, pathname, url) {
       subject: '【速派】找回密码验证码 ' + code + '（10 分钟内有效）',
       html: '<div style="font-family:-apple-system,Segoe UI,PingFang SC,sans-serif;font-size:14px;line-height:1.9;color:#111827">' +
         '<p>' + nm + '，你好：</p>' +
-        '<p>有人在「速派」用你的账号（用户 ID <b>' + (row.code || '—') + '</b>）申请重设密码，验证码 <b>10 分钟内有效</b>：</p>' +
+        '<p>有人在「速派」用你的账号（用户名 <b>' + String(row.username || '—').replace(/[<>&"]/g, '') + '</b>）申请重设密码，验证码 <b>10 分钟内有效</b>：</p>' +
         '<p style="font-size:30px;font-weight:700;letter-spacing:6px;color:#2b6ef6;margin:14px 0"><b>' + code + '</b></p>' +
         '<p style="color:#6b7280;font-size:13px">重设后，其它设备上的登录会全部失效，需要用新密码重新登录。如果不是你本人操作，忽略这封邮件即可，密码不会变。</p></div>'
     });
@@ -608,9 +696,13 @@ async function handleApi(req, res, pathname, url) {
         // 3) 第一次来：建一个「待完善」账号，登录后强制填姓名和手机号
         const id = team.newProfileId();
         const colors = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2'];
+        // 微信新用户还没填姓名，先给一个自动用户名（之后在「我的资料」能看到）
+        let uname;
+        do { uname = 'wx' + String(crypto.randomInt(10000000, 100000000)); }
+        while (store.raw().prepare('SELECT 1 AS x FROM profiles WHERE lower(username) = lower(?)').get(uname));
         store.raw().prepare(
-          "INSERT INTO profiles (id, name, code, phone, role, color, avatar, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,1,?,'member',1)"
-        ).run(id, '', store.newMemberCode(), null, 'tech', colors[Math.floor(Math.random() * colors.length)], info.avatar || null, id);
+          "INSERT INTO profiles (id, username, name, code, phone, role, color, avatar, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,1,?,'member',1)"
+        ).run(id, uname, '', store.newMemberCode(), null, 'tech', colors[Math.floor(Math.random() * colors.length)], info.avatar || null, id);
         profile = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
         log('微信新用户：' + (info.nickname || info.openid) + '（待完善资料）');
       }

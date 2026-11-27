@@ -90,10 +90,12 @@ function zip(files) {
   const techId = reg.json.user.id;
   ok((await api('/api/auth/me', null, tech)).json.team === null, '未入团时 me 里没有团队');
   ok((await db(tech, { table: 'appointments', action: 'select' })).status === 403, '未入团不能查预约');
-  const dupReg = await api('/api/auth/register', { name: '张工', pin: '999999' });
-  ok(dupReg.status === 200 && dupReg.json.user.code, '同名也能注册，各自拿到 8 位用户 ID', dupReg.json && dupReg.json.error);
+  const dupReg = await api('/api/auth/register', { username: 'zhang-er', name: '张工', pin: '999999' });
+  ok(dupReg.status === 200 && dupReg.json.user.code, '姓名相同、用户名不同，可以再注册一个', dupReg.json && dupReg.json.error);
   ok(/^\d{8}$/.test(dupReg.json.user.code) && dupReg.json.user.code !== reg.json.user.code,
     '重名账号的 ID 不同且是 8 位数字', dupReg.json.user.code);
+  const sameUser = await api('/api/auth/register', { username: 'zhang-er', name: '另一个张工', pin: '999999' });
+  ok(sameUser.status === 409 && /用户名/.test(sameUser.json.error || ''), '用户名重复被拒绝', sameUser.json);
 
   console.log('\n[3] 团队码申请 → 管理员同意');
   const badJoin = await api('/api/team/join', { code: 'XXX000000' }, tech);
@@ -133,8 +135,8 @@ function zip(files) {
   ok(sameAppt.status === 200, '给老周红祥派了一单');
   const before = (await db(admin, { table: 'profiles', action: 'select' })).json.data.length;
 
-  const regDup = await api('/api/auth/register', { name: '周红祥', pin: '668888', phone: '13122146919' });
-  ok(regDup.status === 200, '本人用同样的名字注册新账号');
+  const regDup = await api('/api/auth/register', { username: 'zhou-hongxiang2', name: '周红祥', pin: '668888', phone: '13122146919' });
+  ok(regDup.status === 200, '姓名相同、用户名不同，本人注册新账号');
   const techDup = regDup.json.token, techDupId = regDup.json.user.id, techDupCode = regDup.json.user.code;
   ok(/^\d{8}$/.test(techDupCode) && techDupCode !== sameCode, '新账号拿到不同的 8 位 ID', [techDupCode, sameCode]);
   const joinDup = await api('/api/team/join', { code: teamCode }, techDup);
@@ -165,8 +167,8 @@ function zip(files) {
 
   console.log('\n[3c] 同名的是管理员：也不拦，各进各的');
   ok((await api('/api/team/members/role', { id: techId, role: 'admin' }, admin)).status === 200, '把张工提成管理员');
-  const regAdm = await api('/api/auth/register', { name: '张工', pin: '112233' });
-  ok(regAdm.status === 200, '同名新账号可以注册');
+  const regAdm = await api('/api/auth/register', { username: 'zhang-san', name: '张工', pin: '112233' });
+  ok(regAdm.status === 200, '同名新账号（不同用户名）可以注册');
   const techAdm = regAdm.json.token, techAdmId = regAdm.json.user.id;
   await api('/api/team/join', { code: teamCode }, techAdm);
   const reqsAdm = await api('/api/team/requests', null, admin);

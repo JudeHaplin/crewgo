@@ -174,6 +174,7 @@ function click(listeners, act, attrs) {
   const loginHtml = nodes['#login-view'].innerHTML;
   ok(loginHtml.indexOf('初始化') >= 0, '渲染出初始化页');
   ok(loginHtml.indexOf('团队名称') >= 0, '初始化时能填团队名称');
+  ok(loginHtml.indexOf('用户名') >= 0, '初始化也要定用户名');
   ok(nodes['#onboard-view'].innerHTML === '', '没有多余的中间页');
 
   console.log('\n[2] 已初始化 + 配了扫码登录：登录页出现微信按钮');
@@ -187,8 +188,12 @@ function click(listeners, act, attrs) {
   ok(h2.indexOf('登录') >= 0, '渲染出登录页');
   ok(h2.indexOf('微信扫码登录') >= 0, '电脑上显示扫码登录');
   ok(h2.indexOf('注册') >= 0, '有注册入口');
-  ok(h2.indexOf('姓名或用户 ID') >= 0, '登录框支持姓名或 8 位用户 ID');
+  ok(h2.indexOf('用户名或邮箱') >= 0, '登录框支持用户名或邮箱');
   ok(h2.indexOf('忘记密码') >= 0 && h2.indexOf('data-view="recover"') >= 0, '登录页有「忘记密码」入口');
+  click(r0.listeners, 'auth-view', { view: 'register' });
+  const rh = nodes['#login-view'].innerHTML;
+  ok(rh.indexOf('用户名') >= 0 && rh.indexOf('设定后无法更改') >= 0, '注册页要求用户名，并注明「设定后无法更改」');
+  ok(rh.indexOf('验证码') >= 0, '注册页要填邮箱验证码');
 
   console.log('\n[3] 未入团：显示团队门');
   r0 = await run(p => {
@@ -404,6 +409,7 @@ function click(listeners, act, attrs) {
   ok(meh.indexOf('登录设备') >= 0 && meh.indexOf('全部下线') >= 0, '「我的资料」里有登录设备卡片');
   ok(meh.indexOf('改密码后所有设备都要重新登录') >= 0, '卡片上写明了改密码的后果');
   ok(meh.indexOf('用户 ID') >= 0, '「我的资料」里能看到自己的用户 ID');
+  ok(meh.indexOf('用户名') >= 0 && meh.indexOf('不可更改') >= 0, '「我的资料」里显示用户名，并注明不可更改');
   ok(meh.indexOf('PIN') < 0, '页面上不再出现 PIN 字样');
 
   console.log('\n[11] 新建预约：项目 / 维修人员必选，预约人自动带出');

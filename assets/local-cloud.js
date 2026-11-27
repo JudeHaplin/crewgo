@@ -159,9 +159,9 @@
           return { data: null, error: { message: e.message, status: e.status } };
         }
       },
-      async setup(name, password, phone, teamName) {
+      async setup(name, password, phone, teamName, username) {
         try {
-          const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ name: name, password: password, phone: phone, teamName: teamName }) });
+          const out = await call('/api/auth/setup', { method: 'POST', body: JSON.stringify({ username: username || name, name: name, password: password, phone: phone, teamName: teamName }) });
           setToken(out.token);
           cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
           return { data: out, error: null };
@@ -169,12 +169,14 @@
           return { data: null, error: { message: e.message, status: e.status } };
         }
       },
-      register: wrap(async (name, password, phone) => {
-        const out = await call('/api/auth/register', { method: 'POST', body: JSON.stringify({ name, password, phone }) });
+      register: wrap(async payload => {
+        const out = await call('/api/auth/register', { method: 'POST', body: JSON.stringify(payload || {}) });
         setToken(out.token);
         cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
         return out;
       }),
+      /** 注册验证码：还没建号，所以不需要登录 */
+      signupCode: wrap(async email => call('/api/auth/register/code', { method: 'POST', body: JSON.stringify({ email: email }) })),
       updateProfile: wrap(async (name, phone) => {
         const out = await call('/api/auth/profile', { method: 'POST', body: JSON.stringify({ name, phone }) });
         cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: getToken() };

@@ -85,6 +85,9 @@ CREATE TABLE IF NOT EXISTS wx_accounts (
 
 CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY,
+  /* 用户名：登录凭证，全局唯一，设定后不可更改。老库升级时用原姓名回填 */
+  username TEXT,
+  /* 姓名：同事在派单、排期、通知里看到的就是这个 */
   name TEXT NOT NULL,
   /* 用户 ID：8 位数字，建号时随机分配，之后不可更改。人员档案与它一一绑定，
      预约单的 tech_id / owner_id 指向 profiles.id，迁数据就是换这个归属。 */
@@ -115,6 +118,16 @@ CREATE TABLE IF NOT EXISTS profiles (
   reset_code_exp TEXT,
   reset_code_tries INTEGER NOT NULL DEFAULT 0,
   reset_code_sent_at TEXT
+);
+
+/* 注册验证码：还没建号，没地方挂 email_code，单独存一张。
+   按 lower(email) 认人，10 分钟有效，发新码覆盖旧码。 */
+CREATE TABLE IF NOT EXISTS signup_codes (
+  email TEXT PRIMARY KEY,
+  code TEXT NOT NULL,
+  exp TEXT NOT NULL,
+  tries INTEGER NOT NULL DEFAULT 0,
+  sent_at TEXT NOT NULL
 );
 
 /* 登录会话（设备）：一张表记「谁在哪台设备上登录着」，令牌里带 sid 指过来。
@@ -252,6 +265,8 @@ DROP INDEX IF EXISTS profiles_name_key;
 DROP INDEX IF EXISTS profiles_team_name_key;
 CREATE INDEX IF NOT EXISTS profiles_team_name_idx ON profiles (team_id, lower(name));
 CREATE UNIQUE INDEX IF NOT EXISTS profiles_code_key ON profiles (code);
+/* 用户名就是登录凭证，必须全局唯一（大小写不敏感），且不能靠改资料改掉 */
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_username_key ON profiles (lower(username));
 CREATE INDEX IF NOT EXISTS profiles_user_idx ON profiles (user_id);
 CREATE INDEX IF NOT EXISTS profiles_team_idx ON profiles (team_id);
 CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id);
@@ -270,7 +285,7 @@ CREATE INDEX IF NOT EXISTS attach_team_idx ON attachments (team_id);
 
 const TABLES = {
   profiles: {
-    cols: ['id', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id',
+    cols: ['id', 'username', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id',
       'created_at', 'team_id', 'team_role', 'need_profile', 'avatar', 'last_login_at',
       'email_verified_at', 'email_pending', 'email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at'],
     bool: ['active', 'need_profile'],
@@ -373,6 +388,61 @@ function backfillMemberCodes() {
   return n;
 }
 
+/* ---------- 用户名：登录凭证，2–20 位，全局唯一，设定后不可更改 ---------- */
+const USERNAME_RE = /^[A-Za-z0-9_.\-\u4e00-\u9fa5]{2,20}$/;
+
+/** 返回错误文案，空串表示通过。允许中文：老账号的用户名就是原来的姓名 */
+function usernameError(u) {
+  const s = String(u === null || u === undefined ? '' : u).trim();
+  if (!s) return '请填写用户名';
+  if (s.length < 2) return '用户名至少 2 个字符';
+  if (s.length > 20) return '用户名最多 20 个字符';
+  if (/\s/.test(s)) return '用户名不能有空格';
+  if (!USERNAME_RE.test(s)) return '用户名只能用中文、字母、数字、下划线、点或横线';
+  if (/^\d+$/.test(s)) return '用户名不能是纯数字（会和用户 ID 混淆）';
+  return '';
+}
+
+/** 根据姓名生成一个没被占用的用户名（撞名加 -2、-3） */
+function autoUsername(name, h) {
+  const dbh = h || handle();
+  const q = dbh.prepare('SELECT 1 AS x FROM profiles WHERE lower(username) = lower(?)');
+  const base = String(name || '').trim().slice(0, 20) || 'user';
+  let cand = base, i = 1;
+  while (q.get(cand)) {
+    i++;
+    const suffix = '-' + i;
+    cand = base.slice(0, Math.max(1, 20 - suffix.length)) + suffix;
+  }
+  return cand;
+}
+
+/** 老库升级：把还没有用户名的账号用「姓名」填上；撞名的加 -2、-3 后缀（幂等，每次启动都查） */
+function backfillUsernames() {
+  const rows = db.prepare(
+    "SELECT id, name FROM profiles WHERE username IS NULL OR trim(username) = '' ORDER BY rowid"
+  ).all();
+  if (!rows.length) return 0;
+  const taken = new Set(
+    db.prepare('SELECT username FROM profiles WHERE username IS NOT NULL').all().map(r => String(r.username).toLowerCase())
+  );
+  const upd = db.prepare('UPDATE profiles SET username = ? WHERE id = ?');
+  let n = 0;
+  for (const r of rows) {
+    const base = String(r.name || '').trim().slice(0, 20) || 'user';
+    let cand = base, i = 1;
+    while (taken.has(cand.toLowerCase())) {
+      i++;
+      const suffix = '-' + i;
+      cand = base.slice(0, Math.max(1, 20 - suffix.length)) + suffix;
+    }
+    taken.add(cand.toLowerCase());
+    upd.run(cand, r.id);
+    n++;
+  }
+  return n;
+}
+
 /* ---------- 团队码：3 位大写字母 + 6 位数字 ---------- */
 const CODE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // 去掉 I、O，避免和 1、0 看错
 function genTeamCode() {
@@ -444,7 +514,9 @@ const PROFILE_MIGRATIONS = [
   ['reset_code', 'TEXT'],
   ['reset_code_exp', 'TEXT'],
   ['reset_code_tries', 'INTEGER NOT NULL DEFAULT 0'],
-  ['reset_code_sent_at', 'TEXT']
+  ['reset_code_sent_at', 'TEXT'],
+  // 用户名：登录凭证，老库启动时由 backfillUsernames() 用原姓名补齐
+  ['username', 'TEXT']
 ];
 
 /* 预约单改动记录：谁改的、什么时候改的（详情页只给管理员看） */
@@ -516,8 +588,9 @@ function migrate() {
   for (const idx of ['profiles_name_key', 'profiles_team_name_key']) {
     try { db.exec('DROP INDEX IF EXISTS ' + idx); } catch (e) { /* 索引不存在就算了 */ }
   }
-  // 老账号补 8 位 ID（必须在建唯一索引之前完成，见 open() 的顺序）
+  // 老账号补 8 位 ID 与用户名（必须在建唯一索引之前完成，见 open() 的顺序）
   try { backfillMemberCodes(); } catch (e) { /* 补号失败不阻断启动，下次启动再补 */ }
+  try { backfillUsernames(); } catch (e) { /* 同上 */ }
 }
 
 /**
@@ -967,6 +1040,18 @@ function runInner(actor, q) {
         if (values.need_profile === undefined) values.need_profile = 0;
         // 8 位用户 ID 一律服务端分配，前端传什么都不算数（它不在可写列白名单里）
         values.code = newMemberCode();
+        // 用户名是登录凭证：传了就校验格式与唯一，没传就用姓名兜底生成
+        const uname = String(values.username || '').trim();
+        if (uname) {
+          const ue = usernameError(uname);
+          if (ue) throw bad(ue);
+          if (h.prepare('SELECT 1 AS x FROM profiles WHERE lower(username) = lower(?)').get(uname)) {
+            throw bad('这个用户名已经被用了，换一个');
+          }
+          values.username = uname;
+        } else {
+          values.username = autoUsername(values.name, h);
+        }
       }
       if (table === 'appointments' && !values.owner_id) values.owner_id = actor.id;
       if (table === 'notifications') values.owner_id = values.owner_id || actor.id;
@@ -996,6 +1081,8 @@ function runInner(actor, q) {
         values.updater_name = actor.name;
       }
     }
+    // 用户名是登录凭证，设定后不可更改：只能建号时写，接口改不动
+    if (table === 'profiles') delete values.username;
     // 授权码留空 = 保持原来的（前端拿不到旧值，清空也没意义）
     if (table === 'mail_accounts' && !values.pass) delete values.pass;
     if (!Object.keys(values).length) return { data: [] };
@@ -1093,5 +1180,6 @@ module.exports = {
   DATA_DIR, DB_FILE, BACKUP_DIR, TABLES, SCOPED, localStamp,
   genTeamCode, newTeamCode, normCode, CODE_RE, ensureTeamSettings, seedMailAccount,
   newMemberCode, MEMBER_CODE_RE, backfillMemberCodes,
+  USERNAME_RE, usernameError, autoUsername, backfillUsernames,
   normPhone, phoneError, PHONE_RE, isTeamAdmin, isOwner, todayStr
 };
