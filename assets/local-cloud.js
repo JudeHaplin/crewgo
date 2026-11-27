@@ -149,9 +149,9 @@
         const meta = await fetchMeMeta();
         return { data: meta ? { user: meta.user } : null, error: null };
       },
-      async signIn(name, password) {
+      async signIn(account, password) {
         try {
-          const out = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ name: name, password: password }) });
+          const out = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ account: account, password: password }) });
           setToken(out.token);
           cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: out.token };
           return { data: out, error: null };
@@ -202,6 +202,13 @@
           return { error: { message: e.message } };
         }
       },
+      /* ---------- 忘记密码：用已验证邮箱收验证码重设 ---------- */
+      recoverStart: wrap(async account => call('/api/auth/recover/start', {
+        method: 'POST', body: JSON.stringify({ account: account })
+      })),
+      recoverVerify: wrap(async (account, code, password) => call('/api/auth/recover/verify', {
+        method: 'POST', body: JSON.stringify({ account: account, code: code, password: password })
+      })),
       /* ---------- 登录设备 ---------- */
       devices: wrap(async () => call('/api/auth/devices')),
       revokeDevice: wrap(async id => call('/api/auth/devices/revoke', { method: 'POST', body: JSON.stringify({ id: id }) })),

@@ -187,6 +187,8 @@ function click(listeners, act, attrs) {
   ok(h2.indexOf('登录') >= 0, '渲染出登录页');
   ok(h2.indexOf('微信扫码登录') >= 0, '电脑上显示扫码登录');
   ok(h2.indexOf('注册') >= 0, '有注册入口');
+  ok(h2.indexOf('姓名或用户 ID') >= 0, '登录框支持姓名或 8 位用户 ID');
+  ok(h2.indexOf('忘记密码') >= 0 && h2.indexOf('data-view="recover"') >= 0, '登录页有「忘记密码」入口');
 
   console.log('\n[3] 未入团：显示团队门');
   r0 = await run(p => {
@@ -367,8 +369,12 @@ function click(listeners, act, attrs) {
   ok(th.indexOf('确认转让') >= 0, '有「确认转让」按钮');
 
   click(full.listeners, 'settings-tab', { tab: 'people' });
+  const peopleHtml = full.nodes['#page'].innerHTML;
+  ok(peopleHtml.indexOf('迁移数据') >= 0, '人员页有「迁移数据」入口');
+  ok(peopleHtml.indexOf('ID ') >= 0, '人员列表每行显示用户 ID');
   click(full.listeners, 'edit-person', { id: 'p_9' });
   const mh = full.nodes['#modal-root'].innerHTML;
+  ok(mh.indexOf('用户 ID') >= 0, '人员编辑弹窗里显示只读的用户 ID');
   ok(mh.indexOf('岗位身份') >= 0, '人员编辑里只有「岗位身份」');
   ok(mh.indexOf('统筹管理员') < 0 && mh.indexOf('设为管理员') < 0, '人员编辑里不再出现统筹/管理员设置');
 
@@ -397,6 +403,7 @@ function click(listeners, act, attrs) {
   ok(meh.indexOf('修改登录密码') >= 0 && meh.indexOf('原密码') >= 0, '改密码卡片用的是「密码」而不是 PIN');
   ok(meh.indexOf('登录设备') >= 0 && meh.indexOf('全部下线') >= 0, '「我的资料」里有登录设备卡片');
   ok(meh.indexOf('改密码后所有设备都要重新登录') >= 0, '卡片上写明了改密码的后果');
+  ok(meh.indexOf('用户 ID') >= 0, '「我的资料」里能看到自己的用户 ID');
   ok(meh.indexOf('PIN') < 0, '页面上不再出现 PIN 字样');
 
   console.log('\n[11] 新建预约：项目 / 维修人员必选，预约人自动带出');

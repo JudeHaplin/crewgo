@@ -143,6 +143,7 @@
     pollTimer: null,
     devices: [],        // 当前账号登录着的设备（设置 → 我的资料里管理）
     devicesAt: 0,       // 上次拉取设备列表的时间，切到「我的资料」时按需刷新
+    recover: {},        // 找回密码：账号、掩码邮箱、是否已发验证码
     sel: {} // 预约单列表里勾选的 id（批量删除/改状态用）
   };
 
@@ -185,7 +186,10 @@
   }
 
   function showAuth(view, msg, ok) {
-    state.authView = view || 'login';
+    const next = view || 'login';
+    // 离开找回密码页就清掉临时状态，下次进来是干净的第一步
+    if (next !== 'recover' && state.authView === 'recover') state.recover = {};
+    state.authView = next;
     const gate = ['profile', 'team', 'pending'].indexOf(state.authView) >= 0;
     $('#boot').classList.add('hidden');
     $('#app-view').classList.add('hidden');
@@ -195,6 +199,7 @@
     if (state.authView === 'login') host.innerHTML = loginHtml(msg, ok);
     else if (state.authView === 'setup') host.innerHTML = setupHtml(msg, ok);
     else if (state.authView === 'register') host.innerHTML = registerHtml(msg, ok);
+    else if (state.authView === 'recover') host.innerHTML = recoverHtml(msg, ok);
     else if (state.authView === 'profile') host.innerHTML = profileGateHtml(msg, ok);
     else if (state.authView === 'team') host.innerHTML = teamGateHtml(msg, ok);
     else host.innerHTML = pendingGateHtml();
@@ -220,11 +225,11 @@
   }
 
   function loginHtml(msg, ok) {
-    return authCard('登录', '姓名加密码，不用收验证码。',
+    return authCard('登录', '姓名或 8 位用户 ID 加密码登录。',
       msgHtml(msg, ok) +
       '<form data-form="login" novalidate>' +
-        '<div class="field"><label for="lg-name">姓名</label>' +
-          '<input class="input" id="lg-name" name="name" placeholder="你的姓名" required maxlength="20" autocomplete="username"></div>' +
+        '<div class="field"><label for="lg-name">姓名或用户 ID</label>' +
+          '<input class="input" id="lg-name" name="name" placeholder="姓名，或 8 位用户 ID" required maxlength="20" autocomplete="username"></div>' +
         '<div class="field"><label for="lg-pin">密码</label>' +
           '<div class="pin-wrap"><input class="input" id="lg-pin" name="pin" type="password"' + PW_ATTRS + ' placeholder="你的登录密码" autocomplete="current-password">' +
           '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div></div>' +
@@ -232,7 +237,7 @@
       '</form>' +
       wechatButtons(),
       '还没有账号？<a href="#" data-act="auth-view" data-view="register" style="color:var(--primary)">注册一个</a><br>' +
-      '忘记密码找团队管理员在「设置 → 人员」里重设<br>' +
+      '<a href="#" data-act="auth-view" data-view="recover" style="color:var(--primary)">忘记密码？用邮箱找回</a><br>' +
       '<a href="#" data-act="auth-view" data-view="setup" style="color:var(--text-3)">第一次部署？初始化管理员</a>');
   }
 
@@ -275,6 +280,31 @@
       '</form>' +
       wechatButtons(),
       '已经有账号？<a href="#" data-act="auth-view" data-view="login" style="color:var(--primary)">去登录</a>');
+  }
+
+  /** 找回密码：第一步发验证码（认姓名或 8 位 ID），第二步填码 + 新密码 */
+  function recoverHtml(msg, ok) {
+    const r = state.recover || {};
+    const step2 = r.sent
+      ? '<div class="field"><label for="rc-code">验证码</label>' +
+          '<input class="input" id="rc-code" name="code" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocomplete="one-time-code"></div>' +
+        '<div class="field"><label for="rc-pw">新密码</label>' +
+          '<div class="pin-wrap"><input class="input" id="rc-pw" name="pin" type="password"' + PW_ATTRS + ' placeholder="至少 ' + PW_MIN + ' 位" autocomplete="new-password">' +
+          '<button type="button" class="pin-eye" data-act="peek" aria-label="显示或隐藏密码">显示</button></div>' +
+          '<div class="hint">' + PW_TIP + '</div></div>' +
+        '<div class="field"><label for="rc-pw2">再输一次</label>' +
+          '<input class="input" id="rc-pw2" name="pin2" type="password"' + PW_ATTRS + ' placeholder="确认密码" autocomplete="new-password"></div>' +
+        '<button class="btn btn-primary btn-block" type="submit">重设密码</button>' +
+        '<button class="btn btn-block" type="button" data-act="recover-send" style="margin-top:8px">重新发送验证码</button>'
+      : '<button class="btn btn-primary btn-block" type="button" data-act="recover-send">发送验证码</button>';
+    return authCard('找回密码', '验证码发到这个账号已验证的邮箱。',
+      msgHtml(msg, ok) +
+      '<form data-form="recover" novalidate>' +
+        '<div class="field"><label for="rc-account">姓名或用户 ID</label>' +
+          '<input class="input" id="rc-account" name="account" value="' + esc(r.account || '') + '" placeholder="姓名，或 8 位用户 ID" required maxlength="20" autocomplete="username"></div>' +
+        step2 +
+      '</form>',
+      '<a href="#" data-act="auth-view" data-view="login" style="color:var(--primary)">想起来了，去登录</a>');
   }
 
   /** 微信注册的账号：登录后必须补齐姓名和手机号才放行 */
@@ -1043,7 +1073,7 @@
           (p.wx_bound ? ' <span class="tag tag-已确认">微信</span>' : '') +
           (p.active === false ? ' <span class="tag tag-已取消">停用</span>' : '') +
           (offs.length ? ' <span class="tag tag-待确认">休 ' + offs.length + ' 天</span>' : '') + '</div>' +
-          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) +
+          '<div class="sub">ID ' + esc(p.code || '—') + ' · ' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) +
             (offs.length ? ' · 最近休息 ' + esc(offs[0].off_date.slice(5)) + (offs[0].part && offs[0].part !== '全天' ? ' ' + esc(offs[0].part) : '') : '') + '</div></div>' +
         ((isAdmin() || p.id === state.profile.id)
           ? '<button class="btn btn-sm" data-act="time-off" data-id="' + esc(p.id) + '">排休</button>' : '') +
@@ -1068,7 +1098,10 @@
 
     return '<div class="card">' +
       '<div class="card-head"><h3 class="card-title">人员（' + state.profiles.length + '）</h3>' +
-        (isAdmin() ? '<button class="btn btn-sm btn-primary" data-act="add-person">＋ 添加人员</button>' : '') + '</div>' +
+        (isAdmin()
+          ? '<div style="display:flex;gap:8px"><button class="btn btn-sm" data-act="migrate-member">迁移数据</button>' +
+            '<button class="btn btn-sm btn-primary" data-act="add-person">＋ 添加人员</button></div>'
+          : '') + '</div>' +
       rows +
       '</div>' +
       '<div class="card" style="margin-top:14px">' +
@@ -1077,7 +1110,7 @@
         (offRows || '<div class="empty" style="padding:26px"><p>还没有排休</p><span>点人员行上的「排休」可以给他设几天休息</span></div>') +
       '</div>' +
       '<div class="card" style="margin-top:14px"><div class="card-body"><p class="hint">' +
-        '人员就是登录账号：<b>姓名 + 密码</b> 登录，登录后自动归到这个团队。<br>' +
+        '人员就是登录账号：<b>姓名或 8 位用户 ID + 密码</b> 登录；重名的人各有一个 ID，数据互不相干，要合并用上面的「迁移数据」。<br>' +
         '想临时加个临时工，直接「添加人员」并派单即可；对方要自己登录时，用「注册」再用团队码申请。<br>' +
         '<b>排休</b>会给这个人写上休息日，日历和派单都会拦住这段时间。<br>' +
         '要让人当<b>管理员</b>，去「设置 → 管理员」里点「设为管理员」——这里只管岗位身份，不管权限。' +
@@ -1266,7 +1299,7 @@
         '<div class="grow"><div class="nm">' + esc(p.name) + (me ? ' <span class="tag tag-已确认">我</span>' : '') +
           ' <span class="tag ' + (p.team_role === 'owner' ? 'tag-加急' : (p.team_role === 'admin' ? 'tag-已确认' : 'tag-待确认')) + '">' +
           esc(teamRoleLabel(p.team_role)) + '</span></div>' +
-          '<div class="sub">' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
+          '<div class="sub">ID ' + esc(p.code || '—') + ' · ' + esc(p.phone || '无手机号') + ' · ' + esc(ROLE_LABEL[p.role] || p.role) + '</div></div>' +
         (admin && !me && p.team_role !== 'owner'
           ? '<button class="btn btn-sm btn-danger" data-act="member-remove" data-id="' + esc(p.id) + '">移出</button>' : '') +
       '</div>';
@@ -1657,7 +1690,8 @@
         '</div></div>' +
         '<button class="btn btn-primary btn-sm" type="submit">保存</button>' +
       '</form>' +
-      '<div class="kv" style="margin-top:18px"><span>团队身份</span><b>' + esc(teamRoleLabel(p.team_role)) + '</b></div>' +
+      '<div class="kv" style="margin-top:18px"><span>用户 ID</span><b style="font-variant-numeric:tabular-nums;letter-spacing:1.5px">' + esc(p.code || '—') + '</b></div>' +
+      '<div class="kv"><span>团队身份</span><b>' + esc(teamRoleLabel(p.team_role)) + '</b></div>' +
       '<div class="kv"><span>岗位身份</span><b>' + esc(ROLE_LABEL[p.role] || p.role) + '</b></div>' +
       '<div class="kv"><span>账号状态</span><b>' + (p.active === false ? '已停用' : '正常') + '</b></div>' +
       '<div class="kv"><span>参与排期</span><b>' + (p.role === 'tech' || p.role === 'admin' ? '是' : '否（可被指派）') + '</b></div>' +
@@ -2792,6 +2826,7 @@
       case 'add-project': openProjectModal(null); break;
       case 'edit-project': openProjectModal(projectById(id)); break;
       case 'del-project': delProject(id); break;
+      case 'migrate-member': openMigrateModal(); break;
       case 'add-person': openPersonModal(null); break;
       case 'edit-person': openPersonModal(profileById(id)); break;
       case 'del-person': delPerson(id); break;
@@ -2835,6 +2870,7 @@
       case 'mail-logs': openMailLogs(); break;
       case 'run-reminders': manualReminders(el); break;
       case 'enable-desktop': enableDesktop(); break;
+      case 'recover-send': submitRecoverSend(); break;
       case 'change-pin': changeMyPin(); break;
       case 'device-revoke': revokeDevice(el.getAttribute('data-id'), el); break;
       case 'device-revoke-others': revokeOtherDevices(); break;
@@ -2896,6 +2932,7 @@
     if (kind === 'login') submitLogin(f);
     else if (kind === 'setup') submitSetup(f);
     else if (kind === 'register') submitRegister(f);
+    else if (kind === 'recover') submitRecover(f);
     else if (kind === 'profile-setup') submitProfileSetup(f);
     else if (kind === 'team-join') submitTeamJoin(f);
     else if (kind === 'team-create') submitTeamCreate(f);
@@ -2905,14 +2942,56 @@
     else if (kind === 'person') savePerson(f);
   }
 
-  /* ---------- 登录动作（本地账号：姓名 + 密码） ---------- */
+  /* ---------- 登录动作（本地账号：姓名或用户 ID + 密码） ---------- */
   /* ---------- 登录 / 注册 / 团队门动作 ---------- */
   const normCodeInput = v => String(v === null || v === undefined ? '' : v).toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+  /* ---------- 找回密码：发验证码 → 填码 + 新密码 ---------- */
+  async function submitRecoverSend() {
+    const f = $('form[data-form="recover"]');
+    if (!f) return;
+    const account = (f.elements.account.value || '').trim();
+    if (!account) { toast('请填写姓名或用户 ID'); return; }
+    const btn = $('[data-act="recover-send"]');
+    if (btn) { btn.disabled = true; btn.textContent = '发送中…'; }
+    const { data, error } = await cloud.auth.recoverStart(account);
+    if (error) {
+      if (btn) { btn.disabled = false; btn.textContent = '发送验证码'; }
+      toast('发送失败：' + (error.message || '请重试'), 3600);
+      return;
+    }
+    state.recover = { account: account, email: (data && data.email) || '', sent: true };
+    showAuth('recover', '验证码已发到 ' + ((data && data.email) || '你的邮箱') + '，10 分钟内有效', true);
+  }
+
+  async function submitRecover(f) {
+    const account = (f.elements.account.value || '').trim();
+    // 第一步只有账号框，按回车也会走这里，缺的字段一律当成空，别去读不存在的元素
+    const code = f.elements.code ? (f.elements.code.value || '').trim() : '';
+    const pw = f.elements.pin ? normPw(f.elements.pin.value) : '';
+    const pw2 = f.elements.pin2 ? normPw(f.elements.pin2.value) : '';
+    if (!account) { toast('请填写姓名或用户 ID'); return; }
+    if (!code) { toast('请先点「发送验证码」，再填收到的 6 位数字'); return; }
+    const pe = pwError(pw);
+    if (pe) { toast(pe); return; }
+    if (pw !== pw2) { toast('两次输入的密码不一致'); return; }
+    const btn = f.querySelector('button[type="submit"]');
+    if (btn) { btn.disabled = true; btn.textContent = '重设中…'; }
+    const { error } = await cloud.auth.recoverVerify(account, code, pw);
+    if (error) {
+      if (btn) { btn.disabled = false; btn.textContent = '重设密码'; }
+      toast('重设失败：' + (error.message || '请重试'), 3600);
+      return;
+    }
+    state.recover = {};
+    state.loginMode = 'login';
+    showAuth('login', '密码已重设，用新密码登录吧', true);
+  }
 
   async function submitLogin(f) {
     const name = (f.elements.name.value || '').trim();
     const pin = normPw(f.elements.pin.value);
-    if (!name) { toast('请填写姓名'); return; }
+    if (!name) { toast('请填写姓名或用户 ID'); return; }
     if (!pin) { toast('请填写密码'); return; }
 
     const btn = f.querySelector('button[type="submit"]');
@@ -3081,7 +3160,7 @@
       const r = await teamPost('/api/team/requests/decide', { id: Number(id), approve: !!approve });
       await loadAll(); render();
       if (!r.approved) toast('已拒绝');
-      else if (r.merged) toast('已同意，并合并到同名成员「' + r.merged + '」的历史记录', 3600);
+      else if (r.duplicate) toast('已同意，团队里还有一位同名的「' + r.duplicate + '」，是两个独立账号', 3600);
       else toast('已同意，对方刷新就能进来');
     } catch (e) { toast('操作失败：' + e.message, 4200); }
   }
@@ -3750,6 +3829,43 @@
     toast('已删除');
   }
 
+  /** 管理员把某个账号的数据整体迁到另一个账号（同名重复账号靠它收拾） */
+  function openMigrateModal() {
+    const list = (state.profiles || []).filter(p => p.team_role !== 'owner');
+    if (list.length < 2) { toast('至少要两个账号才能迁移'); return; }
+    const opts = list.map(p => '<option value="' + esc(p.id) + '">' + esc(p.name) + '（ID ' + esc(p.code || '—') + '）</option>').join('');
+    openModal(modalShell('迁移人员数据',
+      '<form data-form="migrate" novalidate>' +
+        '<div class="field"><label>把谁的数据迁走（迁完这个账号会删除）</label>' +
+          '<select class="select" name="fromId">' + opts + '</select></div>' +
+        '<div class="field"><label>迁到哪个账号（保留这个账号）</label>' +
+          '<select class="select" name="toId">' + opts + '</select></div>' +
+      '</form>',
+      '<button class="btn" data-act="close-modal">取消</button>' +
+      '<button class="btn btn-primary" data-act="migrate-save">迁移</button>'
+    ));
+    const to = $('select[name="toId"]');
+    if (to) to.selectedIndex = 1;
+    const btn = $('[data-act="migrate-save"]');
+    if (btn) btn.onclick = () => { const f = $('form[data-form="migrate"]'); if (f) saveMigrate(f); };
+  }
+
+  async function saveMigrate(f) {
+    const fromId = f.elements.fromId.value, toId = f.elements.toId.value;
+    if (fromId === toId) { toast('源账号和目标账号不能是同一个'); return; }
+    const from = profileById(fromId), to = profileById(toId);
+    const yes = await confirmDialog('迁移人员数据',
+      '把「' + (from ? from.name : '') + '（ID ' + ((from && from.code) || '—') + '）」的预约单、休息日、通知等全部转到「' +
+      (to ? to.name : '') + '（ID ' + ((to && to.code) || '—') + '）」，源账号会被删除。');
+    if (!yes) return;
+    try {
+      const out = await teamPost('/api/team/members/migrate', { fromId: fromId, toId: toId });
+      await loadAll(); render();
+      const c = (out && out.counts) || {};
+      toast('已迁移：预约单 ' + (c.appointments || 0) + ' 条、休息日 ' + (c.timeOff || 0) + ' 天', 4200);
+    } catch (e) { toast('迁移失败：' + e.message, 3600); }
+  }
+
   function openPersonModal(p) {
     // 岗位身份只分「维修人员 / 预约人」；团队里的管理员身份在「设置 → 管理员」里设。
     // 老数据里 role='admin' 的人保留原值（置灰不能再选），避免编辑手机号时被悄悄改掉。
@@ -3757,6 +3873,7 @@
     const preRole = p && p.role === 'requester' ? 'requester' : 'tech';
     openModal(modalShell(p ? '编辑人员' : '添加人员',
       '<form data-form="person" data-id="' + (p ? esc(p.id) : '') + '">' +
+        (p ? '<div class="field"><label>用户 ID</label><input class="input" value="' + esc(p.code || '') + '" readonly></div>' : '') +
         '<div class="form-row">' +
           '<div class="field"><label>姓名</label><input class="input" name="name" value="' + esc(p ? p.name : '') + '" required maxlength="20"></div>' +
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" value="' + esc(p ? p.phone || '' : '') + '" maxlength="20"></div>' +

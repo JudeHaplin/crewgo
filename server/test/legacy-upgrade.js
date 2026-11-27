@@ -45,6 +45,9 @@ const db = (token, q) => api('/api/db', q, token);
   const tech = techLogin.json.token;
   const gone = await api('/api/auth/login', { name: '已离职的张工', pin: '1111' });
   ok(gone.status === 401, '已停用的账号升级后仍然不能登录');
+  ok(/^\d{8}$/.test(login.json.user.code), '老账号升级后自动补了 8 位用户 ID：' + login.json.user.code);
+  const byCode = await api('/api/auth/login', { account: login.json.user.code, pin: '1234' });
+  ok(byCode.status === 200 && byCode.json.user.id === login.json.user.id, '补到的 ID 可以直接用来登录');
 
   console.log('\n[3] 老数据一条不少');
   const appts = await db(admin, { table: 'appointments', action: 'select' });
@@ -59,6 +62,7 @@ const db = (token, q) => api('/api/db', q, token);
 
   const profs = await db(admin, { table: 'profiles', action: 'select' });
   ok(profs.json.data.length === 3, '3 个人员都在');
+  ok(profs.json.data.every(p => /^\d{8}$/.test(p.code)), '3 个老人员也都补上了 8 位 ID');
   ok(profs.json.data.filter(p => p.role === 'admin').length === 1, '原管理员业务身份没变');
   ok(profs.json.data.filter(p => p.active === false).length === 1, '停用的那个还是停用状态');
 

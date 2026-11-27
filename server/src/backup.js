@@ -19,6 +19,13 @@ const SLOTS = ['全天', '上午', '下午', '晚上'];
 const STATUSES = ['待确认', '已确认', '进行中', '已完成', '已取消'];
 const COLORS = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2', '#d94690', '#65a30d'];
 
+/** 导入时沿用原来的 8 位用户 ID；被占用（别的团队撞号）就重新分配一个 */
+function keepCode(want) {
+  const c = String(want || '').trim();
+  if (store.MEMBER_CODE_RE.test(c) && !raw().prepare('SELECT 1 AS x FROM profiles WHERE code = ?').get(c)) return c;
+  return store.newMemberCode();
+}
+
 /* ============================ 导出 ============================ */
 const TABLES_FOR_TEAM = ['profiles', 'projects', 'appointments', 'notifications', 'settings', 'email_logs'];
 
@@ -72,6 +79,15 @@ function importTeamJson(actor, payload, dry) {
   const report = { kind: 'json', dry: !!dry, profiles: { add: 0, update: 0 }, projects: { add: 0, update: 0 }, appointments: { add: 0, skip: 0 } };
 
   const byName = name => raw().prepare('SELECT * FROM profiles WHERE team_id = ? AND lower(name) = lower(?)').get(teamId, String(name || ''));
+  // 备份里带 8 位用户 ID：优先按 ID 认人，同名的两个人不会互相覆盖；老备份没 ID 才退回按姓名
+  const byProfile = p => {
+    const c = String(p.code || '').trim();
+    if (store.MEMBER_CODE_RE.test(c)) {
+      const hit = raw().prepare('SELECT * FROM profiles WHERE team_id = ? AND code = ?').get(teamId, c);
+      if (hit) return hit;
+    }
+    return byName(p.name);
+  };
   const projByName = name => raw().prepare('SELECT * FROM projects WHERE team_id = ? AND lower(name) = lower(?)').get(teamId, String(name || ''));
 
   const profileRows = Array.isArray(d.profiles) ? d.profiles : [];
@@ -96,7 +112,7 @@ function importTeamJson(actor, payload, dry) {
 
     for (const p of profileRows) {
       if (!p.name) continue;
-      const hit = byName(p.name);
+      const hit = byProfile(p);
       if (hit) {
         report.profiles.update++;
         if (!dry) raw().prepare('UPDATE profiles SET phone = COALESCE(?, phone), email = COALESCE(?, email), role = ?, active = ? WHERE id = ?')
@@ -105,8 +121,8 @@ function importTeamJson(actor, payload, dry) {
         report.profiles.add++;
         if (!dry) {
           const id = p.id && !raw().prepare('SELECT 1 AS x FROM profiles WHERE id = ?').get(p.id) ? p.id : team.newProfileId();
-          raw().prepare('INSERT INTO profiles (id, team_id, name, phone, email, role, color, push_token, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)')
-            .run(id, teamId, p.name, p.phone || null, p.email || null, p.role || 'tech', p.color || COLORS[0],
+          raw().prepare('INSERT INTO profiles (id, team_id, name, code, phone, email, role, color, push_token, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)')
+            .run(id, teamId, p.name, keepCode(p.code), p.phone || null, p.email || null, p.role || 'tech', p.color || COLORS[0],
               p.push_token || null, p.pin_hash || null, p.active === 0 ? 0 : 1, id, 'member');
         }
       }
@@ -312,8 +328,8 @@ function importTable(actor, buf, filename, dry) {
       report.created.techs.push(name);
       if (!dry) {
         const id = team.newProfileId();
-        raw().prepare("INSERT INTO profiles (id, team_id, name, role, color, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,1,?,'member',0)")
-          .run(id, teamId, attr(name), 'tech', COLORS[Object.keys(techCache).length % COLORS.length], id);
+        raw().prepare("INSERT INTO profiles (id, team_id, name, code, role, color, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,1,?,'member',0)")
+          .run(id, teamId, attr(name), store.newMemberCode(), 'tech', COLORS[Object.keys(techCache).length % COLORS.length], id);
         row = raw().prepare('SELECT * FROM profiles WHERE id = ?').get(id);
       }
     }
@@ -430,8 +446,8 @@ function importProfiles(actor, list, header, dry) {
         if (!dry) {
           const auth = require('./auth');
           const id = team.newProfileId();
-          raw().prepare('INSERT INTO profiles (id, team_id, name, phone, email, role, color, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,1,?,\'member\',0)')
-            .run(id, teamId, name, phone || null, email || null, role, COLORS[report.add % COLORS.length], auth.hashPin(pinRaw || '1234'), id);
+          raw().prepare('INSERT INTO profiles (id, team_id, name, code, phone, email, role, color, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,?,1,?,\'member\',0)')
+            .run(id, teamId, name, store.newMemberCode(), phone || null, email || null, role, COLORS[report.add % COLORS.length], auth.hashPin(pinRaw || '123456'), id);
         }
       }
     }

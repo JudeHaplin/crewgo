@@ -81,41 +81,14 @@ function sameNameInTeam(teamId, name, exceptId) {
 }
 
 /**
- * 把账号挂到团队上。团队里已经有同名档案时合并，避免撞 UNIQUE(team_id, lower(name))：
- * 占位档案上的历史（预约、休息日、通知、微信绑定）全部搬到新账号，占位行删掉。
- * 同名的人如果是管理员/统筹则不合并（防止顶着名字把权限接过去），直接报错让统筹先处理。
+ * 把账号挂到团队上。
+ * 2.0 起姓名不再唯一：团队里已经有同名的人，也只是「多了一个同名同事」，
+ * 各用各的 8 位 ID、各看各的预约单，绝不自动搬数据（以前会自动合并，是个坑：
+ * 顶着别人的名字注册就能继承别人的历史）。要合并只能由管理员手动「迁移数据」。
  */
 function attachMember(p, teamId) {
-  const dup = sameNameInTeam(teamId, p.name, p.id);
-  if (!dup) {
-    raw().prepare("UPDATE profiles SET team_id = ?, team_role = 'member', active = 1 WHERE id = ?").run(teamId, p.id);
-    return { merged: null };
-  }
-  if (dup.team_role === 'owner' || dup.team_role === 'admin') {
-    throw bad('团队里已经有一位同名的' + (dup.team_role === 'owner' ? '统筹管理员' : '管理员') + '「' + dup.name +
-      '」。同意前请让统筹先给那一行改名（设置 → 人员），或让对方用原账号登录。');
-  }
-  raw().prepare('UPDATE appointments SET tech_id = ? WHERE team_id = ? AND tech_id = ?').run(p.id, teamId, dup.id);
-  raw().prepare('UPDATE appointments SET owner_id = ? WHERE team_id = ? AND owner_id = ?').run(p.id, teamId, dup.id);
-  raw().prepare('UPDATE notifications SET owner_id = ? WHERE owner_id = ?').run(p.id, dup.id);
-  raw().prepare('UPDATE email_logs SET owner_id = ? WHERE owner_id = ?').run(p.id, dup.id);
-  // 休息日：同一天两条会撞 (team_id, profile_id, off_date)，新账号已经休的就不搬
-  raw().prepare('DELETE FROM time_off WHERE profile_id = ? AND off_date IN (SELECT off_date FROM time_off WHERE profile_id = ?)')
-    .run(dup.id, p.id);
-  raw().prepare('UPDATE time_off SET profile_id = ? WHERE profile_id = ?').run(p.id, dup.id);
-  // 微信绑定：新账号自己绑过就以新的为准
-  const hasWx = raw().prepare('SELECT 1 AS x FROM wx_accounts WHERE profile_id = ? LIMIT 1').get(p.id);
-  if (hasWx) raw().prepare('DELETE FROM wx_accounts WHERE profile_id = ?').run(dup.id);
-  else raw().prepare('UPDATE wx_accounts SET profile_id = ? WHERE profile_id = ?').run(p.id, dup.id);
-  raw().prepare('DELETE FROM team_requests WHERE profile_id = ?').run(dup.id);
-  // 补齐新账号缺的资料（手机号、邮箱、颜色），业务角色沿用占位档案的
-  raw().prepare(
-    'UPDATE profiles SET phone = COALESCE(NULLIF(phone, \'\'), ?), email = COALESCE(NULLIF(email, \'\'), ?), ' +
-    'color = COALESCE(color, ?), role = ? WHERE id = ?'
-  ).run(dup.phone || null, dup.email || null, dup.color || null, dup.role || p.role || 'tech', p.id);
-  raw().prepare('DELETE FROM profiles WHERE id = ?').run(dup.id);
   raw().prepare("UPDATE profiles SET team_id = ?, team_role = 'member', active = 1 WHERE id = ?").run(teamId, p.id);
-  return { merged: dup.name };
+  return { merged: null, duplicate: (sameNameInTeam(teamId, p.name, p.id) || {}).name || null };
 }
 
 /** 凭团队码申请加入。团队开了「免审批」就直接进，否则生成待审申请 */
@@ -125,16 +98,18 @@ function joinByCode(profile, code, message) {
   if (!team) throw bad('团队码不对，请向统筹管理员确认（3 位大写字母 + 6 位数字）');
   if (team.allow_direct === 1) {
     raw().exec('BEGIN');
-    let merged = null;
+    let dupName = null;
     try {
-      merged = attachMember(profile, team.id).merged;
+      dupName = attachMember(profile, team.id).duplicate;
       raw().exec('COMMIT');
     } catch (e) {
       raw().exec('ROLLBACK');
       throw e;
     }
-    notifyTeamAdmins(team.id, '有新成员加入', profile.name + ' 凭团队码加入了团队。', profile.id);
-    return { joined: true, merged, team: publicTeam(team) };
+    notifyTeamAdmins(team.id, '有新成员加入',
+      profile.name + '（ID ' + (profile.code || '—') + '）凭团队码加入了团队。' +
+      (dupName ? '团队里还有一位同名的人，是各自独立的两个账号。' : ''), profile.id);
+    return { joined: true, duplicate: dupName, team: publicTeam(team) };
   }
   const exist = raw().prepare('SELECT * FROM team_requests WHERE team_id = ? AND profile_id = ?').get(team.id, profile.id);
   if (exist && exist.status === 'pending') return { joined: false, pending: true, team: publicTeam(team) };
@@ -167,12 +142,12 @@ function requireAdmin(actor) {
 function listRequests(actor) {
   requireAdmin(actor);
   return raw().prepare(
-    "SELECT r.id, r.profile_id, r.message, r.created_at, p.name, p.phone, p.email, p.role, p.created_at AS profile_created_at, " +
+    "SELECT r.id, r.profile_id, r.message, r.created_at, p.name, p.code, p.phone, p.email, p.role, p.created_at AS profile_created_at, " +
     "CASE WHEN p.team_id IS NULL THEN 0 ELSE 1 END AS already_in_team " +
     "FROM team_requests r JOIN profiles p ON p.id = r.profile_id " +
     "WHERE r.team_id = ? AND r.status = 'pending' ORDER BY r.id ASC"
   ).all(actor.teamId).map(r => Object.assign({}, r, {
-    // 团队里已有同名档案：同意时会合并到那一行，先提示管理员
+    // 团队里已有同名的人：不再自动合并，只给管理员一个「有同名同事」的提示
     dup_name: (sameNameInTeam(actor.teamId, r.name, r.profile_id) || {}).name || null
   }));
 }
@@ -193,9 +168,9 @@ function decide(actor, requestId, approve) {
   if (p.team_id) throw bad('这个人已经加入其他团队了');
 
   raw().exec('BEGIN');
-  let merged = null;
+  let dupName = null;
   try {
-    merged = attachMember(p, actor.teamId).merged;
+    dupName = attachMember(p, actor.teamId).duplicate;
     raw().prepare("UPDATE team_requests SET status = 'approved', decided_at = datetime('now','localtime'), decided_by = ? WHERE id = ?")
       .run(actor.id, r.id);
     raw().prepare("UPDATE team_requests SET status = 'cancelled', decided_at = datetime('now','localtime') WHERE profile_id = ? AND status = 'pending'")
@@ -207,15 +182,15 @@ function decide(actor, requestId, approve) {
   }
   try {
     raw().prepare('INSERT INTO notifications (team_id, owner_id, title, body) VALUES (?,?,?,?)')
-      .run(actor.teamId, p.id, '已加入团队', '你的入团申请通过了，现在可以看到团队的排期和预约单。');
+      .run(actor.teamId, p.id, '已加入团队', '你的入团申请通过了，现在可以看到团队的排期和预约单。你的用户 ID 是 ' + (p.code || '') + '。');
   } catch (e) { /* 通知失败不影响审批 */ }
-  return { ok: true, approved: true, merged };
+  return { ok: true, approved: true, duplicate: dupName, code: p.code || null };
 }
 
 function members(actor) {
   if (!actor.teamId) throw deny('请先加入团队');
   return raw().prepare(
-    'SELECT id, name, phone, email, role, team_role, active, color, avatar, created_at, last_login_at ' +
+    'SELECT id, name, code, phone, email, role, team_role, active, color, avatar, created_at, last_login_at ' +
     'FROM profiles WHERE team_id = ? ORDER BY CASE team_role WHEN \'owner\' THEN 0 WHEN \'admin\' THEN 1 ELSE 2 END, created_at'
   ).all(actor.teamId).map(r => Object.assign({}, r, {
     role_label: ROLE_LABEL[r.team_role] || r.team_role,
@@ -340,6 +315,86 @@ function findByName(name) {
   return raw().prepare('SELECT * FROM profiles WHERE lower(name) = lower(?) AND active = 1').all(String(name || '').trim());
 }
 
+/** 按 8 位用户 ID 找账号（全局唯一，登录 / 找回密码都能用它精确定位到人） */
+function findByCode(code) {
+  const c = String(code || '').trim();
+  if (!store.MEMBER_CODE_RE.test(c)) return null;
+  return raw().prepare('SELECT * FROM profiles WHERE code = ? AND active = 1').get(c) || null;
+}
+
+/** 兜底查人：先按 8 位 ID，再按姓名（同名多于一个就报错，让用户改用 ID） */
+function lookup(ident) {
+  const key = String(ident || '').trim();
+  if (!key) return { error: '请输入姓名或 8 位用户 ID' };
+  if (store.MEMBER_CODE_RE.test(key)) {
+    const row = findByCode(key);
+    return row ? { row } : { error: '没有这个用户 ID：' + key };
+  }
+  const rows = findByName(key);
+  if (!rows.length) return { error: '没找到「' + key + '」这个账号，换 8 位用户 ID 再试' };
+  if (rows.length > 1) return { error: '有 ' + rows.length + ' 位同名的同事，请改用 8 位用户 ID' };
+  return { row: rows[0] };
+}
+
+/**
+ * 把一个人的业务数据整体迁到另一个账号上（管理员操作，同名重复账号靠它收拾）。
+ * 迁完源账号删除：预约单（派单/负责人）、休息日、站内通知、发信记录、附件归属、微信绑定。
+ * 目标账号缺手机号/邮箱时，用源账号的补上（本来就是同一个人）。
+ */
+function migrateMember(actor, fromId, toId) {
+  requireAdmin(actor);
+  const from = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(fromId || ''), actor.teamId);
+  const to = raw().prepare('SELECT * FROM profiles WHERE id = ? AND team_id = ?').get(String(toId || ''), actor.teamId);
+  if (!from || !to) throw bad('两个账号都要在本团队里');
+  if (from.id === to.id) throw bad('源账号和目标账号不能是同一个人');
+  if (from.team_role === 'owner') throw deny('统筹管理员的数据不能迁移，先把统筹身份转让出去');
+
+  const n = r => Number((r && r.changes) || 0);
+  const counts = { appointments: 0, owned: 0, timeOff: 0, notifications: 0, mails: 0, attachments: 0, wx: 0 };
+  raw().exec('BEGIN');
+  try {
+    counts.appointments = n(raw().prepare('UPDATE appointments SET tech_id = ?, tech_name = ? WHERE team_id = ? AND tech_id = ?')
+      .run(to.id, to.name, actor.teamId, from.id));
+    counts.owned = n(raw().prepare('UPDATE appointments SET owner_id = ? WHERE team_id = ? AND owner_id = ?')
+      .run(to.id, actor.teamId, from.id));
+    // 休息日：两边同一天都休会撞 (team_id, profile_id, off_date)，源账号重复的那些天先删掉
+    raw().prepare('DELETE FROM time_off WHERE profile_id = ? AND off_date IN (SELECT off_date FROM time_off WHERE profile_id = ?)').run(from.id, to.id);
+    counts.timeOff = n(raw().prepare('UPDATE time_off SET profile_id = ? WHERE profile_id = ?').run(to.id, from.id));
+    counts.notifications = n(raw().prepare('UPDATE notifications SET owner_id = ? WHERE owner_id = ?').run(to.id, from.id));
+    counts.mails = n(raw().prepare('UPDATE email_logs SET owner_id = ? WHERE owner_id = ?').run(to.id, from.id));
+    counts.attachments = n(raw().prepare('UPDATE attachments SET owner_id = ? WHERE owner_id = ?').run(to.id, from.id));
+    // 微信绑定：目标已绑过就以目标的为准（一个微信号只能对一个账号）
+    const toWx = raw().prepare('SELECT 1 AS x FROM wx_accounts WHERE profile_id = ? LIMIT 1').get(to.id);
+    if (toWx) raw().prepare('DELETE FROM wx_accounts WHERE profile_id = ?').run(from.id);
+    else counts.wx = n(raw().prepare('UPDATE wx_accounts SET profile_id = ? WHERE profile_id = ?').run(to.id, from.id));
+    raw().prepare('DELETE FROM team_requests WHERE profile_id = ?').run(from.id);
+    raw().prepare('DELETE FROM sessions WHERE profile_id = ?').run(from.id);
+    if (!String(to.phone || '').trim() && from.phone) {
+      raw().prepare('UPDATE profiles SET phone = ? WHERE id = ?').run(from.phone, to.id);
+    }
+    if (!String(to.email || '').trim() && from.email) {
+      raw().prepare('UPDATE profiles SET email = ?, email_verified_at = ? WHERE id = ?').run(from.email, from.email_verified_at || null, to.id);
+    }
+    raw().prepare('DELETE FROM profiles WHERE id = ?').run(from.id);
+    raw().exec('COMMIT');
+  } catch (e) {
+    raw().exec('ROLLBACK');
+    throw e;
+  }
+  try {
+    raw().prepare('INSERT INTO notifications (team_id, owner_id, title, body) VALUES (?,?,?,?)')
+      .run(actor.teamId, to.id, '有数据迁入你的账号',
+        actor.name + ' 把「' + from.name + '（ID ' + (from.code || '—') + '）」的数据并到了你的账号（ID ' + (to.code || '—') + '）：预约单 ' +
+        counts.appointments + ' 条、休息日 ' + counts.timeOff + ' 天。');
+  } catch (e) { /* 通知失败不影响迁移结果 */ }
+  return {
+    ok: true,
+    from: { id: from.id, name: from.name, code: from.code || null },
+    to: { id: to.id, name: to.name, code: to.code || null },
+    counts: counts
+  };
+}
+
 function stats(teamId) {
   const t = teamById(teamId);
   if (!t) return null;
@@ -353,7 +408,7 @@ function stats(teamId) {
 }
 
 module.exports = {
-  ROLE_LABEL, TEAM_ROLES, ROLE_VALUES, newProfileId, findByName,
+  ROLE_LABEL, TEAM_ROLES, ROLE_VALUES, newProfileId, findByName, findByCode, lookup, migrateMember,
   teamById, teamByCode, publicTeam, myRequest, createTeam, joinByCode, cancelRequest,
   listRequests, decide, members, setRole, removeMember, leave, transferOwner,
   rename, setAllowDirect, resetCode, dissolve, stats

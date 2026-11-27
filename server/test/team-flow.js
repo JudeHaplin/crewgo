@@ -91,7 +91,9 @@ function zip(files) {
   ok((await api('/api/auth/me', null, tech)).json.team === null, '未入团时 me 里没有团队');
   ok((await db(tech, { table: 'appointments', action: 'select' })).status === 403, '未入团不能查预约');
   const dupReg = await api('/api/auth/register', { name: '张工', pin: '999999' });
-  ok(dupReg.status === 409, '同名待审账号不能重复注册');
+  ok(dupReg.status === 200 && dupReg.json.user.code, '同名也能注册，各自拿到 8 位用户 ID', dupReg.json && dupReg.json.error);
+  ok(/^\d{8}$/.test(dupReg.json.user.code) && dupReg.json.user.code !== reg.json.user.code,
+    '重名账号的 ID 不同且是 8 位数字', dupReg.json.user.code);
 
   console.log('\n[3] 团队码申请 → 管理员同意');
   const badJoin = await api('/api/team/join', { code: 'XXX000000' }, tech);
@@ -119,36 +121,49 @@ function zip(files) {
   const reqsAgain = await api('/api/team/requests', null, admin);
   ok(reqsAgain.json.data.length === 0, '申请列表清空');
 
-  console.log('\n[3b] 同名档案合并：老台账里已经有这个人，审批不能报唯一索引错');
+  console.log('\n[3b] 重名不合并：两个人各有一个 ID，历史数据各归各的');
   const same = await db(admin, { table: 'profiles', action: 'insert', values: { name: '周红祥', role: 'tech', phone: '13122146919', color: '#0f9d76' } });
-  ok(same.status === 200, '管理员手工建了同名技术员「周红祥」');
-  const sameId = same.json.data[0].id;
+  ok(same.status === 200, '管理员手工建了技术员「周红祥」');
+  const sameId = same.json.data[0].id, sameCode = same.json.data[0].code;
+  ok(/^\d{8}$/.test(sameCode), '管理员建的人也有 8 位 ID：' + sameCode);
   const sameAppt = await db(admin, {
     table: 'appointments', action: 'insert',
     values: { visit_date: '2026-12-05', time_slot: '上午', address: '2栋101', content: '换灯', tech_id: sameId, tech_name: '周红祥' }
   });
-  ok(sameAppt.status === 200, '给同名技术员派了一单');
+  ok(sameAppt.status === 200, '给老周红祥派了一单');
   const before = (await db(admin, { table: 'profiles', action: 'select' })).json.data.length;
 
   const regDup = await api('/api/auth/register', { name: '周红祥', pin: '668888', phone: '13122146919' });
   ok(regDup.status === 200, '本人用同样的名字注册新账号');
-  const techDup = regDup.json.token, techDupId = regDup.json.user.id;
+  const techDup = regDup.json.token, techDupId = regDup.json.user.id, techDupCode = regDup.json.user.code;
+  ok(/^\d{8}$/.test(techDupCode) && techDupCode !== sameCode, '新账号拿到不同的 8 位 ID', [techDupCode, sameCode]);
   const joinDup = await api('/api/team/join', { code: teamCode }, techDup);
   ok(joinDup.status === 200 && joinDup.json.pending, '提交入团申请');
   const reqsDup = await api('/api/team/requests', null, admin);
   const targetDup = (reqsDup.json.data || []).find(x => x.profile_id === techDupId);
-  ok(targetDup && targetDup.dup_name === '周红祥', '申请列表里提前提示「已有同名成员」', targetDup);
+  ok(targetDup && targetDup.dup_name === '周红祥', '申请列表里提示「已有同名成员」', targetDup);
   const decDup = await api('/api/team/requests/decide', { id: targetDup && targetDup.id, approve: true }, admin);
   ok(decDup.status === 200 && decDup.json.approved, '同意不再撞 UNIQUE 约束', decDup.json);
-  ok(decDup.json.merged === '周红祥', '返回合并了哪个同名档案', decDup.json);
+  ok(decDup.json.duplicate === '周红祥' && !decDup.json.merged, '只提示有同名，不再自动合并', decDup.json);
   const membersDup = (await db(admin, { table: 'profiles', action: 'select' })).json.data;
-  ok(membersDup.length === before, '人数没变（占位行被合并掉，不是新增一行）', membersDup.length);
-  ok(!membersDup.some(p => p.id === sameId), '同名占位档案已删除');
-  const movedAppt = (await db(admin, { table: 'appointments', action: 'select', filters: [{ op: 'eq', col: 'id', val: sameAppt.json.data[0].id }] })).json.data[0];
-  ok(movedAppt && movedAppt.tech_id === techDupId, '历史预约转到新账号上', movedAppt && movedAppt.tech_id);
+  ok(membersDup.length === before + 1, '人数 +1（是新增一个独立账号，不是合并掉）', membersDup.length);
+  ok(membersDup.some(p => p.id === sameId) && membersDup.some(p => p.id === techDupId), '两个周红祥都在团队里');
+  const stillAppt = (await db(admin, { table: 'appointments', action: 'select', filters: [{ op: 'eq', col: 'id', val: sameAppt.json.data[0].id }] })).json.data[0];
+  ok(stillAppt && stillAppt.tech_id === sameId, '历史预约仍归老账号，没被同名新账号继承', stillAppt && stillAppt.tech_id);
   ok((await api('/api/auth/me', null, techDup)).json.team.id === teamId, '新账号顺利进团队');
 
-  console.log('\n[3c] 同名的是管理员：不合并，给中文提示');
+  console.log('\n[3b2] 管理员可以把老账号的数据迁到另一个 ID（迁完源账号删除）');
+  const mig = await api('/api/team/members/migrate', { fromId: sameId, toId: techDupId }, admin);
+  ok(mig.status === 200 && mig.json.ok, '迁移接口成功', mig.json);
+  ok(mig.json.counts && mig.json.counts.appointments === 1, '迁走了 1 条预约单', mig.json.counts);
+  const afterMig = (await db(admin, { table: 'profiles', action: 'select' })).json.data;
+  ok(!afterMig.some(p => p.id === sameId), '源账号已删除');
+  const migAppt = (await db(admin, { table: 'appointments', action: 'select', filters: [{ op: 'eq', col: 'id', val: sameAppt.json.data[0].id }] })).json.data[0];
+  ok(migAppt && migAppt.tech_id === techDupId, '预约单已绑到目标 ID', migAppt && migAppt.tech_id);
+  ok((await api('/api/team/members/migrate', { fromId: techDupId, toId: techDupId }, admin)).status === 400, '源和目标同一个会被拒绝');
+  ok((await api('/api/team/members/migrate', { fromId: techDupId, toId: techId }, tech)).status !== 200, '普通成员不能迁移别人数据');
+
+  console.log('\n[3c] 同名的是管理员：也不拦，各进各的');
   ok((await api('/api/team/members/role', { id: techId, role: 'admin' }, admin)).status === 200, '把张工提成管理员');
   const regAdm = await api('/api/auth/register', { name: '张工', pin: '112233' });
   ok(regAdm.status === 200, '同名新账号可以注册');
@@ -157,8 +172,9 @@ function zip(files) {
   const reqsAdm = await api('/api/team/requests', null, admin);
   const tAdm = (reqsAdm.json.data || []).find(x => x.profile_id === techAdmId);
   const decAdm = await api('/api/team/requests/decide', { id: tAdm && tAdm.id, approve: true }, admin);
-  ok(decAdm.status === 400 && /同名/.test(decAdm.json.error), '同名管理员时拒绝合并并说明原因', decAdm.json);
-  ok((await api('/api/team/requests/decide', { id: tAdm && tAdm.id, approve: false }, admin)).json.approved === false, '可以改判为拒绝');
+  ok(decAdm.status === 200 && decAdm.json.approved, '同名管理员也不再拦审批', decAdm.json);
+  const twoZhang = (await db(admin, { table: 'profiles', action: 'select' })).json.data.filter(p => p.name === '张工');
+  ok(twoZhang.length === 2 && twoZhang[0].code !== twoZhang[1].code, '团队里两个张工各有一个 ID', twoZhang.map(p => p.code));
   ok((await api('/api/team/members/role', { id: techId, role: 'member' }, admin)).status === 200, '把张工改回成员（后面的权限用例要它当成员）');
 
   console.log('\n[4] 权限：成员不能管项目，能看到团队数据');

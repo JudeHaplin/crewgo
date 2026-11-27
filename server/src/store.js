@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS wx_accounts (
 CREATE TABLE IF NOT EXISTS profiles (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  /* 用户 ID：8 位数字，建号时随机分配，之后不可更改。人员档案与它一一绑定，
+     预约单的 tech_id / owner_id 指向 profiles.id，迁数据就是换这个归属。 */
+  code TEXT,
   phone TEXT,
   email TEXT,
   role TEXT NOT NULL DEFAULT 'tech',
@@ -106,7 +109,12 @@ CREATE TABLE IF NOT EXISTS profiles (
   email_code_exp TEXT,
   email_code_tries INTEGER NOT NULL DEFAULT 0,
   email_code_sent_at TEXT,
-  token_version INTEGER NOT NULL DEFAULT 0
+  token_version INTEGER NOT NULL DEFAULT 0,
+  /* 找回密码：验证码发到已验证邮箱，10 分钟内有效。和「验证邮箱」的码分开存，互不覆盖 */
+  reset_code TEXT,
+  reset_code_exp TEXT,
+  reset_code_tries INTEGER NOT NULL DEFAULT 0,
+  reset_code_sent_at TEXT
 );
 
 /* 登录会话（设备）：一张表记「谁在哪台设备上登录着」，令牌里带 sid 指过来。
@@ -239,7 +247,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS wx_app_openid_key ON wx_accounts (app, openid)
 CREATE INDEX IF NOT EXISTS wx_union_idx ON wx_accounts (unionid);
 CREATE INDEX IF NOT EXISTS wx_profile_idx ON wx_accounts (profile_id);
 DROP INDEX IF EXISTS profiles_name_key;
-CREATE UNIQUE INDEX IF NOT EXISTS profiles_team_name_key ON profiles (team_id, lower(name));
+/* 姓名不再唯一：重名的人各有一个账号、各有一个 8 位 ID，数据互不相干。
+   老库里的 UNIQUE(team_id, lower(name)) 必须去掉，否则第二个同名人根本建不了号。 */
+DROP INDEX IF EXISTS profiles_team_name_key;
+CREATE INDEX IF NOT EXISTS profiles_team_name_idx ON profiles (team_id, lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS profiles_code_key ON profiles (code);
 CREATE INDEX IF NOT EXISTS profiles_user_idx ON profiles (user_id);
 CREATE INDEX IF NOT EXISTS profiles_team_idx ON profiles (team_id);
 CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id);
@@ -322,6 +334,45 @@ const TEAM_LOCKED_COLS = ['team_id', 'team_role'];
 
 let db = null;
 
+/* ---------- 用户 ID：8 位数字（10000000–99999999），建号自动分配，不可更改 ---------- */
+const MEMBER_CODE_RE = /^\d{8}$/;
+
+/** 随机取一个没被占用的 8 位 ID。首位不为 0，念出来、手输都不容易错 */
+function newMemberCode() {
+  const h = handle();
+  const used = h.prepare('SELECT 1 AS x FROM profiles WHERE code = ?');
+  for (let i = 0; i < 200; i++) {
+    const code = String(crypto.randomInt(10000000, 100000000));
+    if (!used.get(code)) return code;
+  }
+  // 概率极低（号段快用满），兜底从随机起点顺序找空位
+  const start = crypto.randomInt(10000000, 100000000);
+  for (let i = 0; i < 200000; i++) {
+    const code = String(10000000 + (start - 10000000 + i) % 90000000);
+    if (!used.get(code)) return code;
+  }
+  throw new Error('用户 ID 号段已用尽');
+}
+
+/** 老库升级：给还没有 ID 的账号补一个（幂等，每次启动都会检查） */
+function backfillMemberCodes() {
+  const rows = db.prepare(
+    "SELECT id FROM profiles WHERE code IS NULL OR code = '' OR code NOT GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'"
+  ).all();
+  if (!rows.length) return 0;
+  const used = new Set(db.prepare('SELECT code FROM profiles WHERE code IS NOT NULL').all().map(r => String(r.code)));
+  const upd = db.prepare('UPDATE profiles SET code = ? WHERE id = ?');
+  let n = 0;
+  for (const r of rows) {
+    let code;
+    do { code = String(crypto.randomInt(10000000, 100000000)); } while (used.has(code));
+    used.add(code);
+    upd.run(code, r.id);
+    n++;
+  }
+  return n;
+}
+
 /* ---------- 团队码：3 位大写字母 + 6 位数字 ---------- */
 const CODE_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // 去掉 I、O，避免和 1、0 看错
 function genTeamCode() {
@@ -386,7 +437,14 @@ const PROFILE_MIGRATIONS = [
   ['email_code_tries', 'INTEGER NOT NULL DEFAULT 0'],
   ['email_code_sent_at', 'TEXT'],
   // 令牌版本：改密码/重设密码时 +1，之前发出去的所有令牌立刻失效（换设备重新登录）
-  ['token_version', 'INTEGER NOT NULL DEFAULT 0']
+  ['token_version', 'INTEGER NOT NULL DEFAULT 0'],
+  // 用户 ID：8 位数字，随机分配，老库启动时由 backfillMemberCodes() 补齐
+  ['code', 'TEXT'],
+  // 找回密码验证码（和「验证邮箱」那套字段分开，互不覆盖）
+  ['reset_code', 'TEXT'],
+  ['reset_code_exp', 'TEXT'],
+  ['reset_code_tries', 'INTEGER NOT NULL DEFAULT 0'],
+  ['reset_code_sent_at', 'TEXT']
 ];
 
 /* 预约单改动记录：谁改的、什么时候改的（详情页只给管理员看） */
@@ -454,9 +512,12 @@ function migrate() {
   if (!colsOf('time_off').includes('part')) {
     db.exec("ALTER TABLE time_off ADD COLUMN part TEXT NOT NULL DEFAULT '全天'");
   }
-  // 同名唯一索引改成「团队内唯一」：不同团队可以有同名的人
-  try { db.exec('DROP INDEX IF EXISTS profiles_name_key'); } catch (e) { /* ignore */ }
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS profiles_team_name_key ON profiles (team_id, lower(name))');
+  // 姓名不再唯一（重名的人各有一个 ID）→ 老库上的唯一索引必须去掉，否则第二个同名人建不了号
+  for (const idx of ['profiles_name_key', 'profiles_team_name_key']) {
+    try { db.exec('DROP INDEX IF EXISTS ' + idx); } catch (e) { /* 索引不存在就算了 */ }
+  }
+  // 老账号补 8 位 ID（必须在建唯一索引之前完成，见 open() 的顺序）
+  try { backfillMemberCodes(); } catch (e) { /* 补号失败不阻断启动，下次启动再补 */ }
 }
 
 /**
@@ -615,8 +676,9 @@ const handle = () => (db || open());
 const SECRET_COLS = {
   settings: ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret'],
   mail_accounts: ['pass'],
-  // 邮箱验证码只给本人用，谁查询都不能回传（否则同队的人能替别人验证）
-  profiles: ['email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at']
+  // 邮箱验证码 / 找回密码验证码只给本人用，谁查询都不能回传（否则同队的人能替别人验证、重设）
+  profiles: ['email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at',
+    'reset_code', 'reset_code_exp', 'reset_code_tries', 'reset_code_sent_at']
 };
 
 function shape(table, row) {
@@ -903,6 +965,8 @@ function runInner(actor, q) {
         if (values.active === undefined) values.active = 1;
         if (!values.team_role) values.team_role = 'member';
         if (values.need_profile === undefined) values.need_profile = 0;
+        // 8 位用户 ID 一律服务端分配，前端传什么都不算数（它不在可写列白名单里）
+        values.code = newMemberCode();
       }
       if (table === 'appointments' && !values.owner_id) values.owner_id = actor.id;
       if (table === 'notifications') values.owner_id = values.owner_id || actor.id;
@@ -1028,5 +1092,6 @@ module.exports = {
   open, run, raw, snapshot, replaceDatabase, shape, bad, deny,
   DATA_DIR, DB_FILE, BACKUP_DIR, TABLES, SCOPED, localStamp,
   genTeamCode, newTeamCode, normCode, CODE_RE, ensureTeamSettings, seedMailAccount,
+  newMemberCode, MEMBER_CODE_RE, backfillMemberCodes,
   normPhone, phoneError, PHONE_RE, isTeamAdmin, isOwner, todayStr
 };
