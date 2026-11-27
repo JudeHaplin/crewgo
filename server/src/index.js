@@ -26,6 +26,20 @@ const HOST = process.env.HOST || '0.0.0.0';
 const ACCESS_LOG = process.env.ACCESS_LOG !== '0';
 const ROOT = process.env.APP_ROOT || path.join(__dirname, '..', '..');
 const VERSION = require('../package.json').version;
+
+/* 关于页的内置文案：库里没设置过（NULL）时用它；管理员主动清空（空串）就显示「暂无」 */
+const ABOUT_INTRO = '速派 · crewgo 是一套给物业维修班组用的预约排期系统：' +
+  '预约人建单（客户、日期、地址、维修内容），维修人员只看自己那几单，统筹管理员用月历看全员排期。' +
+  '账号把「用户名（登录用）」和「姓名（同事看到的）」分开，支持团队隔离、微信登录、站内与邮件通知、' +
+  '预约附件、导入导出，每天还能自动把数据备份到邮箱。整套系统跑在一个 Docker 容器里，数据只存在一个目录，不依赖外部服务。';
+
+const ABOUT_CHANGELOG = [
+  '1.2.20  账号弹窗新增「关于」；退出登录自动关闭对话框；「我的资料」可以换头像',
+  '1.2.19  用户名作为登录凭证，姓名只用于显示；注册要邮箱验证',
+  '1.2.18  账号加 8 位用户 ID；同名注册不再继承数据；管理员可迁移数据；邮箱找回密码',
+  '1.2.17  PIN 改名为密码；新增登录设备管理；改密码后所有设备下线',
+  '1.2.16  品牌统一为「速派 · crewgo」；新增换服务器迁移脚本'
+].join('\n');
 // 飞牛 fnOS 网关会把 /app/<appname>/ 反代进来，这里统一剥掉前缀
 const STRIP = ['/app/crewgo', '/app/crewgo'];
 
@@ -559,6 +573,76 @@ async function handleApi(req, res, pathname, url) {
       .run(name, store.normPhone(phone), row.id);
     const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(row.id);
     return send(res, 200, sessionOf(fresh, req, actor.sid));
+  }
+
+  /* ---------------- 头像：本人上传/清除，浏览器先用 canvas 缩到 160px 再传 ---------------- */
+  if (pathname === '/api/auth/avatar' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    const body = await readBody(req);
+    const data = String(body.dataUrl !== undefined ? body.dataUrl : (body.avatar || '')).trim();
+    if (!data) {
+      store.raw().prepare('UPDATE profiles SET avatar = NULL WHERE id = ?').run(actor.id);
+      const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+      return send(res, 200, { ok: true, avatar: null, user: publicProfile(fresh) });
+    }
+    if (!/^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/.test(data)) {
+      return fail(res, 400, '只支持 PNG / JPEG / WebP 图片');
+    }
+    if (data.length > 400 * 1024) return fail(res, 400, '图片太大了，换一张小一点的（200KB 以内最好）');
+    store.raw().prepare('UPDATE profiles SET avatar = ? WHERE id = ?').run(data, actor.id);
+    const fresh = store.raw().prepare('SELECT * FROM profiles WHERE id = ?').get(actor.id);
+    return send(res, 200, { ok: true, avatar: data, user: publicProfile(fresh) });
+  }
+
+  /* ---------------- 关于页：简介所有人可见，更新日志只给管理员，只有统筹能改 ---------------- */
+  function aboutPayload(actor) {
+    const s = store.raw().prepare('SELECT * FROM settings WHERE team_id = ? ORDER BY id LIMIT 1').get(actor.teamId) || {};
+    const admin = store.isTeamAdmin(actor);
+    // NULL = 从没设置过（用内置默认）；空串 = 管理员主动清空（就显示「暂无」）
+    const intro = s.about_intro === null || s.about_intro === undefined ? ABOUT_INTRO : String(s.about_intro);
+    const log = s.about_changelog === null || s.about_changelog === undefined ? ABOUT_CHANGELOG : String(s.about_changelog);
+    return {
+      app: 'crewgo',
+      name: '速派 · crewgo',
+      version: VERSION,
+      intro: intro,
+      changelog: admin ? log : null,
+      canEdit: store.isOwner(actor),
+      canSeeChangelog: admin
+    };
+  }
+
+  if (pathname === '/api/about' && req.method === 'GET') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    return send(res, 200, aboutPayload(actor));
+  }
+
+  if (pathname === '/api/about' && req.method === 'POST') {
+    const actor = actorFrom(req);
+    if (!actor) return fail(res, 401, '未登录');
+    if (!store.isOwner(actor)) return fail(res, 403, '只有统筹管理员能改简介和更新日志');
+    const body = await readBody(req);
+    const patch = {};
+    if (Object.prototype.hasOwnProperty.call(body, 'intro')) {
+      const v = String(body.intro === null || body.intro === undefined ? '' : body.intro).replace(/\r\n/g, '\n').trim();
+      if (v.length > 4000) return fail(res, 400, '简介最多 4000 字');
+      patch.about_intro = v;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'changelog')) {
+      const v = String(body.changelog === null || body.changelog === undefined ? '' : body.changelog).replace(/\r\n/g, '\n').trim();
+      if (v.length > 20000) return fail(res, 400, '更新日志最多 20000 字');
+      patch.about_changelog = v;
+    }
+    const keys = Object.keys(patch);
+    if (!keys.length) return fail(res, 400, '没有要修改的内容');
+    store.ensureTeamSettings(actor.teamId);
+    store.raw().prepare(
+      'UPDATE settings SET ' + keys.map(k => k + ' = ?').join(', ') + ' WHERE team_id = ?'
+    ).run(...keys.map(k => patch[k]), actor.teamId);
+    log('关于页已更新（' + actor.name + '）：' + keys.join(', '));
+    return send(res, 200, aboutPayload(actor));
   }
 
   /* 改密码：成功后 token_version +1，除了当前这台，其它设备上的令牌立刻作废 */

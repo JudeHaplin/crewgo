@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '../..');
-const TESTS = ['api-smoke', 'sessions', 'legacy-upgrade', 'team-flow', 'mail-flow', 'render-smoke', 'client-shim', 'smtp-mail', 'attachments', 'autobackup', 'member-id'];
+const TESTS = ['api-smoke', 'sessions', 'legacy-upgrade', 'team-flow', 'mail-flow', 'render-smoke', 'client-shim', 'smtp-mail', 'attachments', 'autobackup', 'member-id', 'about'];
 const PORT_BASE = Number(process.env.TEST_PORT_BASE || 8300);
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));

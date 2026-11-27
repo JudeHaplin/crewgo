@@ -144,6 +144,8 @@
     devices: [],        // 当前账号登录着的设备（设置 → 我的资料里管理）
     devicesAt: 0,       // 上次拉取设备列表的时间，切到「我的资料」时按需刷新
     recover: {},        // 找回密码：账号、掩码邮箱、是否已发验证码
+    about: null,        // 关于页数据（简介 / 更新日志 / 当前账号能看什么、改什么）
+    aboutEditing: false,// 关于页是否在编辑态
     sel: {} // 预约单列表里勾选的 id（批量删除/改状态用）
   };
 
@@ -634,13 +636,30 @@
     '</div>';
   }
 
+  /** 头像：有图片就显示图片，没有就用姓名首字 + 颜色 */
+  function avatarHtml(p, size, cls) {
+    const s = Math.max(16, Number(size) || 28);
+    const st = 'width:' + s + 'px;height:' + s + 'px;';
+    const c = cls ? ' ' + cls : '';
+    if (p && p.avatar && /^(data:image\/|https?:\/\/)/i.test(String(p.avatar))) {
+      return '<img class="avatar' + c + '" src="' + esc(p.avatar) + '" alt="" style="' + st + 'object-fit:cover;border-radius:50%">';
+    }
+    return '<span class="avatar' + c + '" style="' + st + 'font-size:' + Math.round(s * 0.42) + 'px;background:' +
+      esc((p && p.color) || '#2b6ef6') + '">' + esc(String((p && p.name) || '?').slice(0, 1)) + '</span>';
+  }
+
   function renderUserChip() {
     const p = state.profile;
     if (!p) return;
     $('#user-name').textContent = p.name;
     const av = $('#user-avatar');
-    av.textContent = p.name.slice(0, 1);
-    av.style.background = p.color || '#2b6ef6';
+    if (p.avatar && /^(data:image\/|https?:\/\/)/i.test(String(p.avatar))) {
+      av.innerHTML = '<img src="' + esc(p.avatar) + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">';
+      av.style.background = 'transparent';
+    } else {
+      av.textContent = p.name.slice(0, 1);
+      av.style.background = p.color || '#2b6ef6';
+    }
   }
 
   function renderNotifBadge() {
@@ -1684,6 +1703,16 @@
     const emailLocked = !!(p.email_verified_at || p.email_verified) && !!p.email;
     return '<div class="card"><div class="card-head"><h3 class="card-title">我的资料</h3></div><div class="card-body">' +
       '<form data-form="save-me">' +
+        '<div class="field"><label>头像</label>' +
+          '<div class="avatar-row">' +
+            avatarHtml(p, 56) +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+              '<button class="btn btn-sm" type="button" data-act="avatar-pick">更换头像</button>' +
+              (p.avatar ? '<button class="btn btn-sm btn-ghost" type="button" data-act="avatar-clear">移除</button>' : '') +
+            '</div>' +
+          '</div>' +
+          '<input type="file" accept="image/png,image/jpeg,image/webp" id="avatar-file" style="display:none">' +
+        '</div>' +
         '<div class="form-row">' +
           '<div class="field"><label>姓名</label><input class="input" name="name" value="' + esc(p.name) + '" required maxlength="20"></div>' +
           '<div class="field"><label>手机号</label><input class="input" name="phone" type="tel" inputmode="numeric" value="' + esc(p.phone || '') + '" maxlength="20" placeholder="11 位"></div>' +
@@ -2793,6 +2822,14 @@
         if (state.settingsTab === 'me') loadDevices();
         break;
       case 'logout': doLogout(); break;
+      case 'about': openAbout(); break;
+      case 'user-menu': openUserMenu(); break;
+      case 'about-edit': state.aboutEditing = true; renderAbout(); break;
+      case 'about-cancel': state.aboutEditing = false; renderAbout(); break;
+      case 'about-save': { const af = $('form[data-form="about"]'); if (af) submitAbout(af); break; }
+      case 'about-clear': clearAbout(); break;
+      case 'avatar-pick': pickAvatar(); break;
+      case 'avatar-clear': clearAvatar(); break;
       case 'auth-view': e.preventDefault(); state.loginMode = el.getAttribute('data-view') === 'setup' ? 'setup' : 'login'; showAuth(el.getAttribute('data-view')); break;
       case 'wx-login': startWechat(el.getAttribute('data-mode') || 'qr', false); break;
       case 'wx-bind': startWechat(inWeChat() && state.wechat.mp ? 'mp' : 'qr', true); break;
@@ -2899,6 +2936,7 @@
 
   function onChange(e) {
     const t = e.target;
+    if (t.id === 'avatar-file') { onAvatarPicked(t); return; }
     if (t.getAttribute('data-filter')) {
       const k = t.getAttribute('data-filter');
       state.filters[k] = t.value;
@@ -3659,6 +3697,8 @@
   }
 
     async function doLogout() {
+    // 先关掉「账号」等对话框：否则退出后登录页上会挂着一个没关的弹窗
+    closeModal();
     try { await cloud.auth.signOut(); } catch (e) { /* ignore */ }
     state.session = null; state.user = null; state.uid = null; state.profile = null;
     state.team = null; state.pending = null; state.teamRequests = []; state.wxSettings = null;
@@ -4459,17 +4499,148 @@
 
   function openUserMenu() {
     const p = state.profile;
+    if (!p) return;
     openModal(modalShell('账号',
       '<div style="display:flex;gap:12px;align-items:center;margin-bottom:16px">' +
-        '<span class="avatar" style="width:44px;height:44px;font-size:16px;background:' + esc(p.color || '#2b6ef6') + '">' + esc(p.name.slice(0, 1)) + '</span>' +
+        avatarHtml(p, 44) +
         '<div><div style="font-weight:650;font-size:15px">' + esc(p.name) + '</div>' +
         '<div class="hint">' + esc(ROLE_LABEL[p.role] || '') + (p.phone ? ' · ' + esc(p.phone) : '') + '</div></div>' +
       '</div>' +
       '<div class="kv"><span>我的预约</span><b>' + state.appointments.filter(a => String(a.tech_id) === String(p.id)).length + ' 条</b></div>' +
       '<div class="kv"><span>未读通知</span><b>' + state.notifications.filter(n => !n.read_at).length + ' 条</b></div>',
+      '<button class="btn" data-act="about" style="margin-right:auto">关于</button>' +
       '<button class="btn" data-act="close-modal">关闭</button>' +
       '<button class="btn btn-danger" data-act="logout">退出登录</button>'
     ));
+  }
+
+  /* ---------- 关于：简介所有人可见，更新日志只给管理员，只有统筹能改 ---------- */
+  async function openAbout() {
+    try {
+      state.about = await window.__api('/api/about');
+    } catch (e) {
+      toast('加载失败：' + (e.message || '请重试'), 3600);
+      return;
+    }
+    state.aboutEditing = false;
+    renderAbout();
+  }
+
+  function renderAbout() {
+    const a = state.about || {};
+    const editing = !!state.aboutEditing;
+    const intro = String(a.intro || '');
+    const log = String(a.changelog || '');
+    const block = (v, empty) => v.trim()
+      ? '<div class="about-text">' + esc(v) + '</div>'
+      : '<p class="hint" style="margin:0">' + empty + '</p>';
+    const body = editing
+      ? '<form data-form="about" novalidate>' +
+          '<div class="field"><label>项目简介</label>' +
+            '<textarea class="input" name="intro" rows="6" maxlength="4000" style="resize:vertical;line-height:1.7">' + esc(intro) + '</textarea></div>' +
+          '<div class="field"><label>更新日志</label>' +
+            '<textarea class="input" name="changelog" rows="12" maxlength="20000" style="resize:vertical;line-height:1.7">' + esc(log) + '</textarea></div>' +
+        '</form>'
+      : '<div class="about-head">' +
+          '<div class="about-name">' + esc(a.name || '速派 · crewgo') + '</div>' +
+          '<div class="about-ver">v' + esc(a.version || '') + '</div>' +
+        '</div>' +
+        '<div class="about-block"><div class="about-label">简介</div>' + block(intro, '暂无简介') + '</div>' +
+        (a.canSeeChangelog
+          ? '<div class="about-block"><div class="about-label">更新日志</div>' + block(log, '暂无更新日志') + '</div>'
+          : '');
+    const foot = editing
+      ? '<button class="btn btn-danger" data-act="about-clear" style="margin-right:auto">清空内容</button>' +
+        '<button class="btn" data-act="about-cancel">取消</button>' +
+        '<button class="btn btn-primary" data-act="about-save">保存</button>'
+      : '<button class="btn" data-act="user-menu">返回</button>' +
+        (a.canEdit ? '<button class="btn btn-primary" data-act="about-edit">编辑</button>' : '');
+    openModal(modalShell('关于', body, foot));
+  }
+
+  async function submitAbout(f) {
+    const intro = String(f.elements.intro ? f.elements.intro.value : '');
+    const changelog = String(f.elements.changelog ? f.elements.changelog.value : '');
+    const btn = $('[data-act="about-save"]');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    try {
+      state.about = await window.__api('/api/about', {
+        method: 'POST', body: JSON.stringify({ intro: intro, changelog: changelog })
+      });
+      state.aboutEditing = false;
+      renderAbout();
+      toast('已保存');
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+      toast('保存失败：' + (e.message || '请重试'), 3600);
+    }
+  }
+
+  async function clearAbout() {
+    const yes = await confirmDialog('清空关于页', '简介和更新日志都会被清空，之后页面显示「暂无」。确定吗？');
+    if (!yes) return;
+    try {
+      state.about = await window.__api('/api/about', {
+        method: 'POST', body: JSON.stringify({ intro: '', changelog: '' })
+      });
+      state.aboutEditing = false;
+      renderAbout();
+      toast('已清空');
+    } catch (e) { toast('清空失败：' + (e.message || '请重试'), 3600); }
+  }
+
+  /* ---------- 头像：选图 → 居中裁成方形 → 缩到 160px → 传 base64 ---------- */
+  function pickAvatar() {
+    const el = $('#avatar-file');
+    if (!el) return;
+    el.value = '';
+    el.click();
+  }
+
+  function shrinkImage(file, size) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const side = Math.min(img.width, img.height);
+          const sx = (img.width - side) / 2;
+          const sy = (img.height - side) / 2;
+          const c = document.createElement('canvas');
+          c.width = size; c.height = size;
+          c.getContext('2d').drawImage(img, sx, sy, side, side, 0, 0, size, size);
+          URL.revokeObjectURL(url);
+          resolve(c.toDataURL('image/jpeg', 0.85));
+        } catch (e) { URL.revokeObjectURL(url); reject(e); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('图片读不出来')); };
+      img.src = url;
+    });
+  }
+
+  async function onAvatarPicked(input) {
+    const file = input && input.files && input.files[0];
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { toast('请选择图片文件'); return; }
+    if (file.size > 8 * 1024 * 1024) { toast('图片太大了，选 8MB 以内的'); return; }
+    try {
+      const dataUrl = await shrinkImage(file, 160);
+      const { error } = await cloud.auth.setAvatar(dataUrl);
+      if (error) { toast('上传失败：' + (error.message || '请重试'), 4000); return; }
+      await loadAll(); render();
+      toast('头像已更新');
+    } catch (e) {
+      toast('处理图片失败：' + (e.message || '换一张试试'), 4000);
+    }
+  }
+
+  async function clearAvatar() {
+    const yes = await confirmDialog('移除头像', '移除后会用姓名首字显示。');
+    if (!yes) return;
+    const { error } = await cloud.auth.setAvatar('');
+    if (error) { toast('移除失败：' + (error.message || '请重试'), 3600); return; }
+    await loadAll(); render();
+    toast('头像已移除');
   }
 
   function confirmDialog(title, message) {

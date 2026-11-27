@@ -177,6 +177,10 @@
       }),
       /** 注册验证码：还没建号，所以不需要登录 */
       signupCode: wrap(async email => call('/api/auth/register/code', { method: 'POST', body: JSON.stringify({ email: email }) })),
+      /** 头像：传 dataUrl（空串 = 移除） */
+      setAvatar: wrap(async dataUrl => call('/api/auth/avatar', {
+        method: 'POST', body: JSON.stringify({ dataUrl: dataUrl || '' })
+      })),
       updateProfile: wrap(async (name, phone) => {
         const out = await call('/api/auth/profile', { method: 'POST', body: JSON.stringify({ name, phone }) });
         cachedMeta = { user: out.user, team: out.team, pending: out.pending, mail: out.mail || { ready: false }, access_token: getToken() };

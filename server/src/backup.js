@@ -19,6 +19,15 @@ const SLOTS = ['全天', '上午', '下午', '晚上'];
 const STATUSES = ['待确认', '已确认', '进行中', '已完成', '已取消'];
 const COLORS = ['#2b6ef6', '#e5484d', '#0f9d76', '#f59e0b', '#6d4aff', '#0891b2', '#d94690', '#65a30d'];
 
+/** 导入时保留头像，但只接受图片 data URL 或 http(s) 地址，且不能太大 */
+function keepAvatar(v) {
+  const s = String(v || '').trim();
+  if (!s || s.length > 400 * 1024) return null;
+  if (/^data:image\/(png|jpeg|jpg|webp);base64,/.test(s)) return s;
+  if (/^https?:\/\//i.test(s)) return s;
+  return null;
+}
+
 /** 导入时沿用原来的用户名；被占用（撞号）就按姓名重新生成一个 */
 function keepUsername(want, name) {
   const u = String(want || '').trim();
@@ -128,9 +137,9 @@ function importTeamJson(actor, payload, dry) {
         report.profiles.add++;
         if (!dry) {
           const id = p.id && !raw().prepare('SELECT 1 AS x FROM profiles WHERE id = ?').get(p.id) ? p.id : team.newProfileId();
-          raw().prepare('INSERT INTO profiles (id, team_id, username, name, code, phone, email, role, color, push_token, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)')
+          raw().prepare('INSERT INTO profiles (id, team_id, username, name, code, phone, email, avatar, role, color, push_token, pin_hash, active, user_id, team_role, need_profile) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)')
             .run(id, teamId, keepUsername(p.username, p.name), p.name, keepCode(p.code), p.phone || null, p.email || null,
-              p.role || 'tech', p.color || COLORS[0], p.push_token || null, p.pin_hash || null,
+              keepAvatar(p.avatar), p.role || 'tech', p.color || COLORS[0], p.push_token || null, p.pin_hash || null,
               p.active === 0 ? 0 : 1, id, 'member');
         }
       }

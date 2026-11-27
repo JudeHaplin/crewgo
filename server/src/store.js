@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS settings (
   last_backup_date TEXT,
   last_backup_at TEXT,
   last_backup_note TEXT,
+  /* 关于页：项目简介与更新日志。NULL = 用内置默认；空串 = 管理员主动清空 */
+  about_intro TEXT,
+  about_changelog TEXT,
   updated_at TEXT
 );
 `;
@@ -286,7 +289,8 @@ CREATE INDEX IF NOT EXISTS attach_team_idx ON attachments (team_id);
 const TABLES = {
   profiles: {
     cols: ['id', 'username', 'name', 'phone', 'email', 'role', 'color', 'push_token', 'pin_hash', 'active', 'user_id',
-      'created_at', 'team_id', 'team_role', 'need_profile', 'avatar', 'last_login_at',
+      // avatar 不在可写列里：头像只能走 /api/auth/avatar（本人、有大小校验），避免被写成超大字符串
+      'created_at', 'team_id', 'team_role', 'need_profile', 'last_login_at',
       'email_verified_at', 'email_pending', 'email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at'],
     bool: ['active', 'need_profile'],
     num: ['team_id', 'email_code_tries']
@@ -489,7 +493,10 @@ const SETTINGS_MIGRATIONS = [
   ['backup_full', 'INTEGER NOT NULL DEFAULT 0'],
   ['last_backup_date', 'TEXT'],
   ['last_backup_at', 'TEXT'],
-  ['last_backup_note', 'TEXT']
+  ['last_backup_note', 'TEXT'],
+  // 关于页：简介所有人可见，更新日志只给管理员（走 /api/about 读，不进 /api/db 的回传）
+  ['about_intro', 'TEXT'],
+  ['about_changelog', 'TEXT']
 ];
 
 const PROFILE_MIGRATIONS = [
@@ -747,7 +754,8 @@ const handle = () => (db || open());
 
 /* ---------- 结果规范化：把 0/1 变成布尔，把 id 变成数字 ---------- */
 const SECRET_COLS = {
-  settings: ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret'],
+  // about_changelog 不是密钥，但「更新日志仅管理员可见」，所以同样不能被 /api/db 原样回传
+  settings: ['smtp_pass', 'wx_mp_secret', 'wx_qr_secret', 'about_changelog'],
   mail_accounts: ['pass'],
   // 邮箱验证码 / 找回密码验证码只给本人用，谁查询都不能回传（否则同队的人能替别人验证、重设）
   profiles: ['email_code', 'email_code_exp', 'email_code_tries', 'email_code_sent_at',

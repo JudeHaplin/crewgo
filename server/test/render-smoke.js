@@ -410,6 +410,7 @@ function click(listeners, act, attrs) {
   ok(meh.indexOf('改密码后所有设备都要重新登录') >= 0, '卡片上写明了改密码的后果');
   ok(meh.indexOf('用户 ID') >= 0, '「我的资料」里能看到自己的用户 ID');
   ok(meh.indexOf('用户名') >= 0 && meh.indexOf('不可更改') >= 0, '「我的资料」里显示用户名，并注明不可更改');
+  ok(meh.indexOf('更换头像') >= 0 && meh.indexOf('avatar-file') >= 0, '「我的资料」能更换头像');
   ok(meh.indexOf('PIN') < 0, '页面上不再出现 PIN 字样');
 
   console.log('\n[11] 新建预约：项目 / 维修人员必选，预约人自动带出');
